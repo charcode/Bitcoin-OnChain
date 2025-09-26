@@ -1,0 +1,20 @@
+name: btc-onchain
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core
+  - python=3.11
+  - numpy
+  - uvicorn
+  - fastapi
+  - httpx
+  - pydantic
+  - python-dotenv
+
+  # Dev / optional
+  - pip
+  - pip:
+      # If you want to pin versions or add pip-only packages, put them here
+      # Example:
+      # - some-pip-only-lib==0.1.0

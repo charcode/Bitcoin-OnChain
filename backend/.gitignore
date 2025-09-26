@@ -1,0 +1,61 @@
+# --- Global ignores ---
+.DS_Store
+Thumbs.db
+
+# --- Python backend ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+*.log
+
+# Conda / venv
+.envrc
+.venv/
+env/
+venv/
+*.conda
+*.yml.lock
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+*.ipynb
+
+# --- FastAPI / Uvicorn ---
+*.sqlite
+*.db
+
+# --- React frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+frontend/.parcel-cache/
+*.tsbuildinfo
+
+# --- Environment files ---
+backend/local.env   # secrets (RPC user/pw etc.)
+# Keep backend/.env in git if you want defaults tracked
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+
+# --- IDE/editor cruft ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*~
+
+# --- OS cruft ---
+ehthumbs.db
+Desktop.ini
