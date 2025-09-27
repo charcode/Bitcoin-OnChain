@@ -6,7 +6,7 @@ from typing import Optional, List
 
 from .config import SETTINGS
 from .rpc import Rpc
-from .mempool import MempoolCache
+from .core.mempool_cache import MempoolCache
 from .rnr import rnr_search, RnrResult
 
 

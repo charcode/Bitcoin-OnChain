@@ -1,162 +1,145 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
+from typing import Iterable, List
 import math
-import statistics
+import numpy as np
 
-from .config import SETTINGS
 
+# ----- helpers -----
+
+def weight_output(n_vout: int, is_rbf: bool) -> float:
+    # simple, stable: fewer outputs and non-RBF → a bit more weight
+    base = 1.0 / max(1, int(n_vout))
+    return base * (0.8 if is_rbf else 1.0)
+
+
+def nearest_round_distance_usd(x_usd: float, grid: int) -> float:
+    if grid <= 0:
+        return 0.0
+    r = x_usd % grid
+    return min(r, grid - r)
+
+
+# ----- histogram -----
+
+def rnr_histogram_usd(
+    outs: Iterable[dict],
+    price_usd: float,
+    grid: int,
+    span_mults: int,
+    window_half: float,
+) -> List[dict]:
+    """
+    Build histogram around +/- span_mults multiples of `grid` centered on current price.
+    Count outputs whose USD value is within +/- window_half of each multiple.
+    """
+    if grid <= 0:
+        return []
+
+    center = round(price_usd / grid) * grid
+    anchors = [center + k * grid for k in range(-span_mults, span_mults + 1)]
+
+    bins = []
+    for a in anchors:
+        c = 0
+        wsum = 0.0
+        for o in outs:
+            usd = float(o["value_btc"]) * price_usd
+            if abs(usd - a) <= window_half:
+                c += 1
+                wsum += float(o.get("weight", 1.0))
+        bins.append({"price": float(a), "count": int(c), "weight_sum": float(wsum)})
+    return bins
+
+
+# ----- RNR search -----
 
 @dataclass
-class RnrResult:
-    # grid results
-    grid_prices: List[float]
-    raw_scores: List[float]
-    zscores: List[float]
+class SearchResult:
+    grid_prices: np.ndarray  # candidate prices
+    scores: np.ndarray       # baseline-subtracted scores (>=0)
+    raw_scores: np.ndarray   # raw before baseline
+    best_idx: int
     best_price: float
     best_score: float
-    confidence: float
-    fwhm_usd: float
-    prominence: float
+    curvature: float
+
+    @property
+    def zscores(self) -> np.ndarray:
+        # Compatibility alias for old code that expected .zscores
+        return self.scores
 
 
-def _nearest_bucket_usd(x_usd: float, step: float) -> float:
-    return round(x_usd / step) * step
+def _score_for_price(outs: List[dict], price: float, grids: List[int], sigma_usd: float) -> float:
+    if not outs:
+        return 0.0
+    s = 0.0
+    inv2sig2 = 1.0 / (2.0 * (sigma_usd ** 2) + 1e-12)
+    for o in outs:
+        vb = float(o["value_btc"])
+        w = float(o.get("weight", 1.0))
+        x = vb * price  # USD
+        for g in grids:
+            if g <= 0:
+                continue
+            d = nearest_round_distance_usd(x, g)
+            # scale per-grid by 1/sqrt(g) to reduce large-grid dominance
+            wg = 1.0 / math.sqrt(float(g))
+            s += w * wg * math.exp(-(d * d) * inv2sig2)
+    return s
 
 
-def _gaussian_weight(delta: float, sigma: float) -> float:
-    # exp(-0.5 * (delta/sigma)^2)
-    s = sigma if sigma > 1e-9 else 1e-9
-    z = delta / s
-    return math.exp(-0.5 * z * z)
+def _running_median(y: np.ndarray, k: int) -> np.ndarray:
+    # simple median filter; pad at edges
+    k = max(3, int(k) | 1)  # force odd
+    pad = k // 2
+    ypad = np.pad(y, (pad, pad), mode='edge')
+    out = np.empty_like(y)
+    for i in range(len(y)):
+        out[i] = np.median(ypad[i:i + k])
+    return out
 
 
-def rnr_histogram_usd(outputs_btc: List[float], price_usd: float, step: float,
-                      min_usd: float, max_usd: float) -> Dict[float, int]:
-    """
-    Snap each output*price_usd (=> USD) to nearest 'round-dollar bucket' (step USD).
-    Only keep buckets within [min_usd, max_usd].
-    """
-    buckets: Dict[float, int] = {}
-    for v_btc in outputs_btc:
-        usd = v_btc * price_usd
-        if usd < min_usd or usd > max_usd:
-            continue
-        b = _nearest_bucket_usd(usd, step)
-        buckets[b] = buckets.get(b, 0) + 1
-    return dict(sorted(buckets.items()))
+def rnr_search(
+    outs: List[dict],
+    price_min: float,
+    price_max: float,
+    price_step: float,
+    sigma_usd: float,
+    grids: List[int],
+) -> SearchResult:
+    if not outs or price_max <= price_min or price_step <= 0:
+        P = np.arange(price_min, price_max + 1e-9, max(price_step, 1.0))
+        zeros = np.zeros_like(P)
+        return SearchResult(P, zeros, zeros, 0, float(price_min), 0.0, 0.0)
 
+    P = np.arange(price_min, price_max + 1e-9, price_step)
+    raw = np.empty_like(P)
+    for i, p in enumerate(P):
+        raw[i] = _score_for_price(outs, float(p), grids, sigma_usd)
 
-def rnr_search(outputs_btc: List[float]) -> RnrResult:
-    """
-    For candidate prices in the USD grid, compute resonance score:
-      - Convert each output value to USD with candidate price p
-      - Compute distance to nearest bucket (round-dollar multiple of PRICE_STEP)
-      - Score = mean over outputs of Gaussian(delta_usd; sigma_usd)
-    Then robustly normalize (median/MAD) to z-scores.
-    """
-    step = SETTINGS.price_step
-    sigma = SETTINGS.sigma_usd
-    pmin, pmax = SETTINGS.price_min, SETTINGS.price_max
+    # remove broad baseline so peaks stand out
+    med = _running_median(raw, k=max(7, int(15 * (50.0 / price_step))))
+    # small EMA to handle slow drift
+    ema = np.copy(raw)
+    alpha = 0.05
+    for i in range(1, len(ema)):
+        ema[i] = alpha * raw[i] + (1.0 - alpha) * ema[i - 1]
+    baseline = 0.5 * med + 0.5 * ema
 
-    if not outputs_btc:
-        grid = [p for p in _frange(pmin, pmax, step)]
-        zeros = [0.0 for _ in grid]
-        return RnrResult(grid, zeros, zeros, grid[0], 0.0, 0.0, float("inf"), 0.0)
+    z = raw - baseline
+    z = np.maximum(z, 0.0)
 
-    grid: List[float] = [p for p in _frange(pmin, pmax, step)]
-    raw_scores: List[float] = []
+    i_best = int(np.argmax(z))
+    p_best = float(P[i_best])
+    s_best = float(z[i_best])
 
-    inv_n = 1.0 / len(outputs_btc)
+    # discrete 2nd derivative (scaled by step^2 to be scale-invariant)
+    if 0 < i_best < len(z) - 1:
+        lap = (z[i_best - 1] - 2.0 * z[i_best] + z[i_best + 1]) / (price_step ** 2)
+        curv = -float(lap)  # positive when there is a "sharp" peak
+        curv = max(curv, 0.0)
+    else:
+        curv = 0.0
 
-    for p in grid:
-        s = 0.0
-        for v_btc in outputs_btc:
-            usd = v_btc * p
-            nearest = _nearest_bucket_usd(usd, step)
-            delta = usd - nearest
-            w = _gaussian_weight(delta, sigma)
-            s += w
-        raw_scores.append(s * inv_n)  # mean kernel value
-
-    # Robust normalization: median + MAD
-    med = statistics.median(raw_scores)
-    abs_dev = [abs(x - med) for x in raw_scores]
-    mad = statistics.median(abs_dev) if any(abs_dev) else 0.0
-    scale = (1.4826 * mad) if mad > 1e-12 else (statistics.pstdev(raw_scores) or 1.0)
-
-    zscores: List[float] = [(x - med) / scale for x in raw_scores]
-
-    # find peak
-    best_idx = max(range(len(zscores)), key=lambda i: zscores[i])
-    best_price = grid[best_idx]
-    best_score = zscores[best_idx]
-
-    # confidence components
-    # 1) peak height (z)
-    peak_height = max(0.0, best_score)
-
-    # 2) prominence: gap vs second-highest
-    second = max([zscores[i] for i in range(len(zscores)) if i != best_idx], default=med)
-    prominence = max(0.0, best_score - second)
-
-    # 3) sharpness via FWHM on raw_scores (not z), converted to USD width
-    fwhm_usd = _estimate_fwhm(grid, raw_scores, best_idx)
-
-    # Combine:
-    # - peak height contributes via logistic; strong z (>=3) ~ 0.95
-    # - prominence contributes; gap >= 1.5 z ~ strong
-    # - sharpness: narrower fwhm → higher confidence. Normalize by a reasonable width (e.g., 20 * step)
-    c_peak = _sigmoid(peak_height / 3.0)
-    c_prom = _sigmoid(prominence / 1.5)
-    c_sharp = 1.0 - min(1.0, (fwhm_usd / max(step * 20.0, 1e-9)))  # 0..1
-
-    confidence = max(0.0, min(1.0, 0.5 * c_peak + 0.3 * c_prom + 0.2 * c_sharp))
-
-    return RnrResult(
-        grid_prices=grid,
-        raw_scores=raw_scores,
-        zscores=zscores,
-        best_price=best_price,
-        best_score=best_score,
-        confidence=confidence,
-        fwhm_usd=fwhm_usd,
-        prominence=prominence,
-    )
-
-
-def _frange(start: float, stop: float, step: float):
-    x = start
-    # inclusive of stop if close
-    while x <= stop + 1e-9:
-        yield round(x, 8)
-        x += step
-
-
-def _sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + math.exp(-x))
-
-
-def _estimate_fwhm(grid: List[float], y: List[float], idx: int) -> float:
-    """
-    Approximate Full Width at Half Maximum around peak index.
-    Operates on raw scores (y).
-    """
-    peak = y[idx]
-    if peak <= 0:
-        return float("inf")
-    half = peak * 0.5
-    # left
-    li = idx
-    while li > 0 and y[li] >= half:
-        li -= 1
-    # right
-    ri = idx
-    n = len(y)
-    while ri < n - 1 and y[ri] >= half:
-        ri += 1
-    if li == idx and ri == idx:
-        return float("inf")
-    width_points = max(1, (ri - li))
-    step = SETTINGS.price_step
-    return width_points * step
+    return SearchResult(P, z, raw, i_best, p_best, s_best, curv)
