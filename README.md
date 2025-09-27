@@ -1,11 +1,11 @@
-# BTC On-Chain â€” Live RNR Nowcaster
+# BTC On-Chain - Live RNR Nowcaster
 
-Estimate Bitcoinâ€™s spot price from **mempool outputs** using a **Round-Number Resonance (RNR)** signal.
+Estimate Bitcoin's spot price from mempool outputs using a Round-Number Resonance (RNR) signal.
 
-- **Backend:** Python 3.10+ Â· FastAPI (Uvicorn)
-- **Frontend:** React + Vite (TypeScript)
+- Backend: Python 3.10+, FastAPI (Uvicorn)
+- Frontend: React + Vite (TypeScript)
 
-**Idea:** Convert each mempool output (BTC) to USD at candidate prices on a grid. Outputs tend to cluster near **round USD buckets** when the price guess is right. The **sharpest resonance** (peak height, prominence, and narrow width) is the nowcast; confidence reflects peak quality.
+Idea: Convert each mempool output (BTC) to USD at candidate prices on a grid. Outputs tend to cluster near round USD buckets when the price guess is right. The sharpest resonance (peak height, prominence, and narrow width) is the nowcast; confidence reflects peak quality.
 
 ---
 
@@ -13,20 +13,20 @@ Estimate Bitcoinâ€™s spot price from **mempool outputs** using a **Round-Nu
 
 ```
 .
-â”œâ”€ backend/                  # Python package: btc_onchain
-â”‚  â””â”€ btc_onchain/
-â”‚     â”œâ”€ main.py             # FastAPI app (import path: btc_onchain.main:app)
-â”‚     â”œâ”€ config.py           # env vars & defaults
-â”‚     â”œâ”€ rpc.py              # Rpc class (final; keep as-is)
-â”‚     â”œâ”€ mempool.py          # mempool scanner + rolling cache
-â”‚     â”œâ”€ rnr.py              # RNR search + histogram
-â”‚     â””â”€ state.py            # AppState + RnrEngine
-â””â”€ frontend/                 # React + Vite dashboard (TypeScript)
-   â”œâ”€ index.html
-   â””â”€ src/
-      â”œâ”€ main.tsx, App.tsx
-      â”œâ”€ components/         # CurveChart, DebugBar, PriceCards, CandidatesPanel
-      â””â”€ lib/                # api.ts, types.ts
+- backend/                  # Python package: btc_onchain
+  - btc_onchain/
+    - main.py               # FastAPI app (import path: btc_onchain.main:app)
+    - config.py             # env vars and defaults
+    - rpc.py                # Rpc class (final; keep as-is)
+    - mempool.py            # mempool scanner and rolling cache
+    - rnr.py                # RNR search and histogram
+    - state.py              # AppState and RnrEngine
+- frontend/                 # React + Vite dashboard (TypeScript)
+  - index.html
+  - src/
+    - main.tsx, App.tsx
+    - components/           # CurveChart, DebugBar, PriceCards, CandidatesPanel
+    - lib/                  # api.ts, types.ts
 ```
 
 ---
@@ -56,9 +56,9 @@ cd Bitcoin-OnChain
 
 ## 2) Prerequisites
 
-- **Bitcoin Core** with RPC (`server=1`, `rpcuser=â€¦`, `rpcpassword=â€¦`)
-- **Python** 3.10+ (3.11 recommended)
-- **Node.js** 18+ (20 LTS recommended) and npm/pnpm/yarn
+- Bitcoin Core with RPC (server=1, rpcuser=..., rpcpassword=...)
+- Python 3.10+ (3.11 recommended)
+- Node.js 18+ (20 LTS recommended) and npm/pnpm/yarn
 
 ---
 
@@ -76,11 +76,14 @@ source .venv/bin/activate
 pip install "fastapi>=0.111" "uvicorn[standard]>=0.30" "httpx>=0.27" "pydantic>=2.7"
 ```
 
-(Optionally create `backend/requirements.txt` with the same packages and use `pip install -r requirements.txt`.)
+(Optional) create backend/requirements.txt with the same packages and use:
+```bash
+pip install -r requirements.txt
+```
 
 ### Configure
 
-Create `backend/.env` (example values):
+Create backend/.env (example values):
 ```bash
 # Bitcoin Core RPC
 BTC_RPC_URL=http://127.0.0.1:8332
@@ -109,9 +112,9 @@ RNR_GRIDS=10,25,50,100,250,500,1000,2000,5000,10000
 HIST_SPAN_MULTS=8
 ```
 
-**Tuning notes:**  
-- Lower **SIGMA** (e.g., 25) â†’ sharper peaks; higher (75â€“100) â†’ smoother curve.  
-- Ensure **PRICE_STEP** and **SIGMA** are in the same ballpark (e.g., both â‰ˆ 50 USD).
+Tuning notes:
+- Lower SIGMA (for example, 25) -> sharper peaks; higher (75-100) -> smoother curve.
+- Ensure PRICE_STEP and SIGMA are in the same ballpark (for example, both ~ 50 USD).
 
 ### Run (dev)
 ```bash
@@ -124,11 +127,11 @@ uvicorn btc_onchain.main:app --reload --port 8000
 
 | Route                | Method | Description |
 |---------------------|--------|-------------|
-| `/health`           | GET    | Liveness ping |
-| `/price/now`        | GET    | `{ t, price, confidence, curvature, samples_used }` |
-| `/rnr/curve`        | GET    | `{ t, points: [{p, s}] }` normalized grid (z-scores) |
-| `/debug/candidates` | GET    | `{ total_outputs_cached, usable }` |
-| `/debug/histogram`  | GET    | Counts per round-USD bucket; query: `price`, `step` |
+| /health             | GET    | Liveness ping |
+| /price/now          | GET    | { t, price, confidence, curvature, samples_used } |
+| /rnr/curve          | GET    | { t, points: [{p, s}] } normalized grid (z-scores) |
+| /debug/candidates   | GET    | { total_outputs_cached, usable } |
+| /debug/histogram    | GET    | Counts per round-USD bucket; query: price, step |
 
 Examples:
 ```bash
@@ -146,7 +149,7 @@ cd frontend
 npm install
 ```
 
-Create `frontend/.env`:
+Create frontend/.env:
 ```bash
 VITE_API_URL=http://127.0.0.1:8000
 ```
@@ -158,11 +161,11 @@ npm run dev
 ```
 
 The UI polls:
-- `/price/now` (estimate + confidence)
-- `/rnr/curve` (chart)
-- `/debug/candidates` (cache stats)
-- `/health` (liveness)
-- `/debug/histogram` (round-USD bucket histogram)
+- /price/now (estimate and confidence)
+- /rnr/curve (chart)
+- /debug/candidates (cache stats)
+- /health (liveness)
+- /debug/histogram (round-USD bucket histogram)
 
 ### Build (prod)
 ```bash
@@ -170,43 +173,42 @@ npm run build     # outputs to frontend/dist
 npm run preview   # optional local preview of the built app
 ```
 
-Serve `dist/` behind a static server; reverse-proxy `/` (frontend) + `/api` (or path) to backend.  
+Serve dist/ behind a static server; reverse-proxy / (frontend) and /api (or your chosen path) to the backend.
 Ensure CORS in the backend includes your frontend origin.
 
 ---
 
-## 5) Tuning & Troubleshooting
+## 5) Tuning and Troubleshooting
 
-**Symptoms:** price glued near `PRICE_MIN` (~30000) and confidence â‰ˆ 0  
-**Fixes to try:**
-- Curve too flat â†’ **decrease `SIGMA`** (25â€“40) or **increase `PRICE_STEP`** (25â†’50).
-- Not enough data â†’ **increase `LOOKBACK_SEC`** or **DECODE_PER_TICK**; verify mempool activity.
-- Boundary bias â†’ widen `PRICE_MIN/MAX`.
-- Inspect `/debug/histogram` around the best price:
-  - Clear peaks at round buckets â†’ good resonance
-  - Flat histogram â†’ gather more data or retune `SIGMA/PRICE_STEP`.
+Symptoms: price glued near PRICE_MIN (~30000) and confidence ~ 0
+Fixes to try:
+- Curve too flat -> decrease SIGMA (25-40) or increase PRICE_STEP (25 -> 50).
+- Not enough data -> increase LOOKBACK_SEC or DECODE_PER_TICK; verify mempool activity.
+- Boundary bias -> widen PRICE_MIN/PRICE_MAX.
+- Inspect /debug/histogram around the best price:
+  - Clear peaks at round buckets -> good resonance
+  - Flat histogram -> gather more data or retune SIGMA/PRICE_STEP.
 
-**Endpoint sanity checks**
+Endpoint sanity checks:
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/debug/candidates
 curl http://127.0.0.1:8000/rnr/curve
 ```
 
-**Windows / WSL tip:**  
-If Core runs on Windows and backend in WSL, set `BTC_RPC_URL` to the Windows host/LAN IP and allow RPC from WSL subnet.
+Windows / WSL tip:
+If Core runs on Windows and backend in WSL, set BTC_RPC_URL to the Windows host or LAN IP and allow RPC from the WSL subnet.
 
 ---
 
 ## 6) Production
 
 Run Uvicorn behind a reverse proxy (TLS, static files, caching):
-
 ```bash
 uvicorn btc_onchain.main:app --host 0.0.0.0 --port 8000 --workers 2
 ```
 
-Serve the built frontend (`frontend/dist`) via Nginx/Caddy/Traefik and proxy API to the backend.  
+Serve the built frontend (frontend/dist) via Nginx/Caddy/Traefik and proxy API to the backend.
 Update backend CORS to include the production frontend origin.
 
 ---
@@ -233,9 +235,9 @@ dev:
 
 ## 8) Contributing
 
-- Keep the **`Rpc`** class intact (final).
-- Prefer small, testable functions in `btc_onchain/`.
-- Frontend fetchers/types live in `frontend/src/lib/`.
+- Keep the Rpc class intact (final).
+- Prefer small, testable functions in btc_onchain/.
+- Frontend fetchers and types live in frontend/src/lib/.
 
 ---
 
