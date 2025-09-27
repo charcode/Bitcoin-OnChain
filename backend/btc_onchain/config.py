@@ -1,41 +1,51 @@
 from __future__ import annotations
 import os
-from dataclasses import dataclass
-from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
-# Load defaults then local overrides
-load_dotenv(".env")
-load_dotenv("local.env", override=True)
 
-@dataclass(frozen=True)
-class Settings:
-    rpc_url: str = os.getenv("BTC_RPC_URL", "http://127.0.0.1:8332")
-    rpc_user: str = os.getenv("BTC_RPC_USER", "")
-    rpc_pass: str = os.getenv("BTC_RPC_PASS", "")
+def _env_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    return float(v) if v is not None else default
 
-    lookback_sec: int = int(os.getenv("LOOKBACK_SEC", "900"))
-    poll_interval: float = float(os.getenv("POLL_INTERVAL", "5"))
-    scan_interval: float = float(os.getenv("SCAN_INTERVAL", "10"))
 
-    price_min: float = float(os.getenv("PRICE_MIN", "30000"))
-    price_max: float = float(os.getenv("PRICE_MAX", "120000"))
-    price_step: float = float(os.getenv("PRICE_STEP", "50"))
+def _env_int(name: str, default: int) -> int:
+    v = os.getenv(name)
+    return int(v) if v is not None else default
 
-    sigma: float = float(os.getenv("SIGMA", "0.06"))
-    ema_alpha: float = float(os.getenv("EMA_ALPHA", "0.25"))
-    min_samples: int = int(os.getenv("MIN_SAMPLES", "5"))
 
-    # mempool decode throttling
-    decode_per_tick: int = int(os.getenv("DECODE_PER_TICK", "200"))
+def _env_str(name: str, default: str) -> str:
+    v = os.getenv(name)
+    return v if v is not None else default
 
-    # roundness grids
-    grids: tuple[float, ...] = tuple(
-        float(x) for x in os.getenv(
-            "RNR_GRIDS", "10,25,50,100,250,500,1000,2000,5000,10000"
-        ).split(",")
-    )
 
-    hist_span_mults: int = int(os.getenv("HIST_SPAN_MULTS", "8"))
+class Settings(BaseModel):
+    # RPC
+    btc_rpc_url: str = Field(default_factory=lambda: _env_str("BTC_RPC_URL", "http://127.0.0.1:8332"))
+    btc_rpc_user: str = Field(default_factory=lambda: _env_str("BTC_RPC_USER", ""))
+    btc_rpc_pass: str = Field(default_factory=lambda: _env_str("BTC_RPC_PASS", ""))
 
-settings = Settings()
+    # Mempool scanning
+    lookback_sec: int = Field(default_factory=lambda: _env_int("LOOKBACK_SEC", 900))
+    poll_interval: float = Field(default_factory=lambda: _env_float("POLL_INTERVAL", 5.0))
+    scan_interval: float = Field(default_factory=lambda: _env_float("SCAN_INTERVAL", 10.0))
+    decode_per_tick: int = Field(default_factory=lambda: _env_int("DECODE_PER_TICK", 400))
+    min_samples: int = Field(default_factory=lambda: _env_int("MIN_SAMPLES", 50))
 
+    # RNR search grid (USD)
+    price_min: float = Field(default_factory=lambda: _env_float("PRICE_MIN", 30000.0))
+    price_max: float = Field(default_factory=lambda: _env_float("PRICE_MAX", 120000.0))
+    price_step: float = Field(default_factory=lambda: _env_float("PRICE_STEP", 50.0))
+
+    # Kernel and smoothing
+    # IMPORTANT: sigma is in USD (fixed), not proportional to price
+    sigma_usd: float = Field(default_factory=lambda: _env_float("SIGMA", 50.0))
+    ema_alpha: float = Field(default_factory=lambda: _env_float("EMA_ALPHA", 0.25))
+
+    # RNR multi-grids / history
+    rnr_grids: list[int] = Field(default_factory=lambda: [
+        10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000
+    ])
+    hist_span_mults: int = Field(default_factory=lambda: _env_int("HIST_SPAN_MULTS", 8))
+
+
+SETTINGS = Settings()

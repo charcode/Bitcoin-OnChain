@@ -1,84 +1,114 @@
 from __future__ import annotations
-import sys, asyncio, time
-from fastapi import FastAPI, Request
+import asyncio
+import time
+from typing import Optional
+
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-
-# Windows: avoid proactor shutdown quirks
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-from .api.routes import router
-from .config import settings
+from .config import SETTINGS
 from .rpc import Rpc
-from .workers import refresh_loop, rnr_loop
+from .state import AppState
+from .types import CurveResp, CurvePoint, CandidatesInfo, HistogramResp
+from .mempool import MempoolCache
+from .rnr import rnr_histogram_usd
 
-app = FastAPI(title="btc-onchain")
-# allow Vite dev and localhost
+
+app = FastAPI(title="btc-onchain RNR Nowcaster", version="0.2.0")
+
+# CORS for Vite dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(router)
-
-# Keep refs so we can stop cleanly
-_bg_tasks: list[asyncio.Task] = []
-_rpc: Rpc | None = None
-
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start = time.time()
-    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start))
-    try:
-        response = await call_next(request)
-        dur = (time.time() - start) * 1000
-        print(f"[{ts}] [req] {request.method} {request.url.path} -> {response.status_code} in {dur:.1f}ms")
-        return response
-    except Exception as e:
-        dur = (time.time() - start) * 1000
-        print(f"[{ts}] [req] {request.method} {request.url.path} -> ERROR in {dur:.1f}ms: {e}")
-        raise
+STATE: Optional[AppState] = None
+TASKS: list[asyncio.Task] = []
 
 
 @app.on_event("startup")
-async def startup():
-    global _rpc, _bg_tasks
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [startup] initializing RPC client")
-    _rpc = Rpc(settings.rpc_url, settings.rpc_user, settings.rpc_pass)
-    _bg_tasks = [
-        asyncio.create_task(refresh_loop(_rpc)),
-        asyncio.create_task(rnr_loop()),
+async def _startup():
+    global STATE, TASKS
+    rpc = Rpc(SETTINGS.btc_rpc_url, SETTINGS.btc_rpc_user, SETTINGS.btc_rpc_pass)
+    STATE = AppState(rpc=rpc, mempool=MempoolCache())
+    # spawn workers
+    TASKS = [
+        asyncio.create_task(STATE.refresh_loop(), name="mempool-refresh"),
+        asyncio.create_task(STATE.rnr_loop(), name="rnr-loop"),
     ]
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [startup] tasks scheduled")
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [startup] READY")
 
 
 @app.on_event("shutdown")
-async def shutdown():
-    # cancel background tasks
-    for t in _bg_tasks:
-        t.cancel()
-    for t in _bg_tasks:
+async def _shutdown():
+    global STATE, TASKS
+    if STATE:
+        STATE.stop_evt.set()
         try:
-            await t
-        except asyncio.CancelledError:
+            await STATE.rpc.aclose()
+        except Exception:
             pass
-
-    # close RPC client
-    if _rpc is not None:
-        try:
-            await _rpc.aclose()
-        except Exception as e:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [shutdown] RPC close error: {e}")
-
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [shutdown] complete")
+    for t in TASKS:
+        t.cancel()
 
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "ts": time.time()}
+    return {"ok": True, "t": int(time.time())}
+
+
+@app.get("/price/now")
+async def price_now():
+    assert STATE is not None
+    return STATE.latest_price_now()
+
+
+@app.get("/rnr/curve", response_model=CurveResp)
+async def rnr_curve():
+    assert STATE is not None
+    res = STATE.rnr.last_result
+    pts: list[CurvePoint] = []
+    if res is not None:
+        pts = [CurvePoint(p=p, s=z) for p, z in zip(res.grid_prices, res.zscores)]
+    return CurveResp(t=int(time.time()), points=pts)
+
+
+@app.get("/debug/candidates", response_model=CandidatesInfo)
+async def debug_candidates():
+    assert STATE is not None
+    total = len(STATE.mempool.outputs)
+    usable = len(STATE.mempool.get_recent_outputs())
+    return CandidatesInfo(total_outputs_cached=total, usable=usable)
+
+
+@app.get("/debug/histogram", response_model=HistogramResp)
+async def debug_histogram(
+    price: Optional[float] = Query(None, description="USD/BTC used to convert outputs; defaults to latest estimate"),
+    step: Optional[float] = Query(None, description="Bucket size in USD; defaults to PRICE_STEP"),
+):
+    """
+    Returns counts per round-dollar bucket for outputs converted to USD using `price`.
+    """
+    assert STATE is not None
+    outs = STATE.mempool.get_recent_outputs()
+    used_price = price or (STATE.rnr.last_result.best_price if STATE.rnr.last_result else None)
+    used_price = float(used_price) if used_price else SETTINGS.price_min  # fallback to pmin
+    used_step = float(step) if step else SETTINGS.price_step
+
+    buckets = rnr_histogram_usd(outs, used_price, used_step, SETTINGS.price_min, SETTINGS.price_max)
+    # stringify keys for JSON stability on the client side
+    buckets_str = {f"{int(k) if k.is_integer() else k}": v for k, v in buckets.items()}
+    return HistogramResp(
+        t=int(time.time()),
+        used_price=used_price,
+        step=used_step,
+        buckets=buckets_str,
+        total_samples=len(outs),
+    )
