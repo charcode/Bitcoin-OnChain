@@ -1,246 +1,279 @@
-# BTC On-Chain - Live RNR Nowcaster
+# btc-onchain — Live RNR Nowcaster
 
-Estimate Bitcoin's spot price from mempool outputs using a Round-Number Resonance (RNR) signal.
-
-- Backend: Python 3.10+, FastAPI (Uvicorn)
-- Frontend: React + Vite (TypeScript)
-
-Idea: Convert each mempool output (BTC) to USD at candidate prices on a grid. Outputs tend to cluster near round USD buckets when the price guess is right. The sharpest resonance (peak height, prominence, and narrow width) is the nowcast; confidence reflects peak quality.
+Estimate the **BTC/USD price** *purely from on-chain and mempool activity* by detecting **Round-Number Resonance (RNR)** — clustering of transaction output values around round-dollar amounts across multiple grid sizes (e.g., $50, $100, $500).  
+No external price feed is used.
 
 ---
 
-## Repo layout
+## Overview
+
+This project connects directly to a local Bitcoin node and continuously scans the mempool. It converts transaction outputs to USD using candidate price levels, detects resonance at round-number anchors, and exposes the results over a FastAPI backend with a React/Vite frontend.
+
+### Processing pipeline
+
+- **Bitcoin node RPC** →  
+- **MempoolCache** (rolling outputs window) →  
+- **RnrEngine** (multi-grid resonance computation, baseline removal, peak detection) →  
+- **FastAPI API** →  
+- **React/Vite frontend dashboard**
+
+---
+
+## Features
+
+- **Live on-chain only estimation** — no external price feeds.
+- **Multi-grid RNR scoring** across different round-dollar anchors.
+- **Robust baseline removal & sharpness-based confidence**.
+- **Diagnostics**: resonance curve & USD histograms.
+
+---
+
+## Repository layout
 
 ```
-.
-- backend/                  # Python package: btc_onchain
-  - btc_onchain/
-    - main.py               # FastAPI app (import path: btc_onchain.main:app)
-    - config.py             # env vars and defaults
-    - rpc.py                # Rpc class (final; keep as-is)
-    - mempool.py            # mempool scanner and rolling cache
-    - rnr.py                # RNR search and histogram
-    - state.py              # AppState and RnrEngine
-- frontend/                 # React + Vite dashboard (TypeScript)
-  - index.html
-  - src/
-    - main.tsx, App.tsx
-    - components/           # CurveChart, DebugBar, PriceCards, CandidatesPanel
-    - lib/                  # api.ts, types.ts
+backend/
+  btc_onchain/
+    __init__.py
+    main.py
+    config.py
+    models.py
+    rpc.py                  # KEEP THIS CLASS
+    rnr.py                  # rnr_search(), histogram utilities
+    api/
+      __init__.py
+      routes.py             # /price/now, /rnr/curve, /debug/candidates, /debug/histogram, /debug/distribution, /health
+    core/
+      __init__.py
+      app_state.py          # wires Rpc, MempoolCache, RnrEngine; runs loops
+      mempool_cache.py      # rolling outputs cache (BTC values, weights)
+      rnr_engine.py         # runs rnr_search in a thread; stores latest results & hist cache
+frontend/
+  ... (React/Vite app)
+show.ps1                    # dumps backend files + README.md + environment.yml
+environment.yml             # Anaconda env spec
 ```
 
 ---
 
-## 1) Checkout
+## Requirements & Installation (Windows + Anaconda)
 
-Your remote is configured as:
-```bash
-git remote -v
-origin  github-charcode:charcode/Bitcoin-OnChain.git (fetch)
-origin  github-charcode:charcode/Bitcoin-OnChain.git (push)
+### Prerequisites
+
+- [Anaconda/Miniconda](https://docs.conda.io/en/latest/miniconda.html)
+- [Node.js LTS](https://nodejs.org)
+- [Bitcoin node](https://bitcoinknots.org) fully synced, with RPC enabled.
+
+Minimal `bitcoin.conf`:
+
+```ini
+server=1
+rpcuser=youruser
+rpcpassword=yourpass
+rpcallowip=127.0.0.1
+rpcport=8332
 ```
 
-Clone (SSH alias):
-```bash
-git clone github-charcode:charcode/Bitcoin-OnChain.git
-cd Bitcoin-OnChain
-```
+### Backend setup
 
-Or HTTPS:
-```bash
-git clone https://github.com/charcode/Bitcoin-OnChain.git
-cd Bitcoin-OnChain
-```
-
----
-
-## 2) Prerequisites
-
-- Bitcoin Core with RPC (server=1, rpcuser=..., rpcpassword=...)
-- Python 3.10+ (3.11 recommended)
-- Node.js 18+ (20 LTS recommended) and npm/pnpm/yarn
-
----
-
-## 3) Backend (FastAPI)
-
-### Install
-```bash
+```powershell
 cd backend
-python -m venv .venv
-# Windows PowerShell: .\.venv\Scripts\Activate.ps1
-# macOS/Linux:
-source .venv/bin/activate
-
-# Minimal deps:
-pip install "fastapi>=0.111" "uvicorn[standard]>=0.30" "httpx>=0.27" "pydantic>=2.7"
+conda env create -f environment.yml
+conda activate btc-onchain
 ```
 
-(Optional) create backend/requirements.txt with the same packages and use:
-```bash
-pip install -r requirements.txt
+Example `environment.yml`:
+
+```yaml
+name: btc-onchain
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - uvicorn
+  - fastapi
+  - httpx
+  - pydantic
+  - numpy
+  - pip
+  - pip:
+      - python-dotenv
 ```
 
-### Configure
+### Environment variables
 
-Create backend/.env (example values):
-```bash
-# Bitcoin Core RPC
-BTC_RPC_URL=http://127.0.0.1:8332
-BTC_RPC_USER=youruser
-BTC_RPC_PASS=yourpass
+Set these in PowerShell:
 
-# Mempool scanning
-LOOKBACK_SEC=900
-POLL_INTERVAL=5
-SCAN_INTERVAL=10
-DECODE_PER_TICK=400
-MIN_SAMPLES=50
-
-# RNR grid (USD)
-PRICE_MIN=30000
-PRICE_MAX=120000
-PRICE_STEP=50
-
-# Kernel/smoothing
-# IMPORTANT: SIGMA is a FIXED USD width (not a fraction of price)
-SIGMA=50
-EMA_ALPHA=0.25
-
-# Optional multi-grids / histogram span (used internally)
-RNR_GRIDS=10,25,50,100,250,500,1000,2000,5000,10000
-HIST_SPAN_MULTS=8
+```powershell
+setx BTC_RPC_URL  "http://127.0.0.1:8332"
+setx BTC_RPC_USER "youruser"
+setx BTC_RPC_PASS "yourpass"
+# Optional tuning:
+setx PRICE_MIN "80000"
+setx PRICE_MAX "140000"
+setx PRICE_STEP "50"
+setx SIGMA "75"
+setx EMA_ALPHA "0.25"
+setx HIST_SPAN_MULTS "8"
+setx HIST_SIGMA_FRAC "0.20"
+setx DECODE_PER_TICK "50"
+setx LOOKBACK_SEC "900"
 ```
 
-Tuning notes:
-- Lower SIGMA (for example, 25) -> sharper peaks; higher (75-100) -> smoother curve.
-- Ensure PRICE_STEP and SIGMA are in the same ballpark (for example, both ~ 50 USD).
-
-### Run (dev)
-```bash
-cd backend
-# venv active
-uvicorn btc_onchain.main:app --reload --port 8000
-```
-
-### API (quick reference)
-
-| Route                | Method | Description |
-|---------------------|--------|-------------|
-| /health             | GET    | Liveness ping |
-| /price/now          | GET    | { t, price, confidence, curvature, samples_used } |
-| /rnr/curve          | GET    | { t, points: [{p, s}] } normalized grid (z-scores) |
-| /debug/candidates   | GET    | { total_outputs_cached, usable } |
-| /debug/histogram    | GET    | Counts per round-USD bucket; query: price, step |
-
-Examples:
-```bash
-curl http://127.0.0.1:8000/price/now
-curl "http://127.0.0.1:8000/debug/histogram?price=61234&step=50"
-```
+*(Restart terminal to apply `setx` values.)*
 
 ---
 
-## 4) Frontend (Vite + React)
+## Running
 
-### Install
-```bash
+### Backend
+
+```powershell
+cd backend
+conda activate btc-onchain
+uvicorn --host 127.0.0.1 --port 8000 btc_onchain.main:app
+```
+
+Endpoints:
+
+- `GET /health`
+- `GET /price/now` → `{ t, price, confidence, curvature, samples_used }`
+- `GET /rnr/curve` → `{ t, points: [{p, s}, ...] }`
+- `GET /debug/candidates` → `{ total_outputs_cached, usable }`
+- `GET /debug/histogram?grid=100&span=8` → histogram bins near round-dollar anchors.
+
+### Frontend
+
+```powershell
 cd frontend
 npm install
-```
-
-Create frontend/.env:
-```bash
-VITE_API_URL=http://127.0.0.1:8000
-```
-
-### Run (dev)
-```bash
 npm run dev
-# usually http://127.0.0.1:5173
 ```
 
-The UI polls:
-- /price/now (estimate and confidence)
-- /rnr/curve (chart)
-- /debug/candidates (cache stats)
-- /health (liveness)
-- /debug/histogram (round-USD bucket histogram)
-
-### Build (prod)
-```bash
-npm run build     # outputs to frontend/dist
-npm run preview   # optional local preview of the built app
-```
-
-Serve dist/ behind a static server; reverse-proxy / (frontend) and /api (or your chosen path) to the backend.
-Ensure CORS in the backend includes your frontend origin.
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
 ---
 
-## 5) Tuning and Troubleshooting
+## Configuration
 
-Symptoms: price glued near PRICE_MIN (~30000) and confidence ~ 0
-Fixes to try:
-- Curve too flat -> decrease SIGMA (25-40) or increase PRICE_STEP (25 -> 50).
-- Not enough data -> increase LOOKBACK_SEC or DECODE_PER_TICK; verify mempool activity.
-- Boundary bias -> widen PRICE_MIN/PRICE_MAX.
-- Inspect /debug/histogram around the best price:
-  - Clear peaks at round buckets -> good resonance
-  - Flat histogram -> gather more data or retune SIGMA/PRICE_STEP.
+Environment variables (see `config.py`):
 
-Endpoint sanity checks:
-```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/debug/candidates
-curl http://127.0.0.1:8000/rnr/curve
+- **RPC**: `BTC_RPC_URL`, `BTC_RPC_USER`, `BTC_RPC_PASS`
+- **Scanning**:
+  - `DECODE_PER_TICK` (default 50): outputs decoded per tick.
+  - `LOOKBACK_SEC` (default 900): rolling window.
+  - `SCAN_INTERVAL` (default 2s).
+- **Price grid**:
+  - `PRICE_MIN`, `PRICE_MAX`, `PRICE_STEP`.
+- **RNR kernel**:
+  - `SIGMA` (default 75).
+  - `RNR_GRIDS` (default `[10,25,50,100,250,500,1000,2000,5000,10000]`).
+  - `EMA_ALPHA` (default 0.25).
+- **Histograms**:
+  - `HIST_SPAN_MULTS` (default 8).
+  - `HIST_SIGMA_FRAC` (default 0.20).
+
+---
+
+## Algorithm
+
+1. **Scoring**: For candidate price `p`, convert outputs `v_btc` to USD, compute Gaussian kernel score at nearest round-dollar anchors for each grid, scale by `1/sqrt(g)`, sum.
+2. **Baseline removal**: median + slow EMA baseline, subtract → resonance curve.
+3. **Best price**: `argmax` resonance.
+4. **Confidence**: peak sharpness (discrete curvature) × peak height.
+5. **Histogram**: bins around anchors near estimate.
+
+---
+
+## Frontend UI
+
+- **Price cards** summarising nowcaster vs stencil confidence.
+- **Resonance curve** with live RNR scores.
+- **Historical heatmap** overlay with zoomable mempool buckets.
+- **Transaction size distribution** with linear/log/sqrt scale options and round-USD overlays.
+- **Control overlay** for grids, heatmap cadence, distribution bins, scale, anchors, and block lookback.
+
+All panels update automatically; no tab switching required.
+
+---
+
+## Troubleshooting
+
+- **Price stuck at lower bound**: widen `[PRICE_MIN, PRICE_MAX]`; check `SIGMA`.
+- **Confidence ~0**: increase lookback or decode rate, adjust `SIGMA`.
+- **Empty candidates**: check RPC connectivity and `bitcoin.conf`.
+
+---
+
+## Logging & Dev loop
+
+- Logs show mempool scan counts & resonance timings.
+- Heavy CPU tasks run in `asyncio.to_thread`.
+
+---
+
+## Export helper (PowerShell)
+
+`show.ps1` dumps backend sources + README + environment.yml:
+
+```powershell
+# show.ps1 — dump backend sources + env + README
+$ErrorActionPreference = 'Stop'
+$root   = $PSScriptRoot
+$src    = Join-Path $root 'btc_onchain'
+if (-not (Test-Path $src)) { Write-Error "btc_onchain/ not found"; exit 1 }
+
+$exclude = @('__pycache__', '.venv', 'venv', '.pytest_cache', '.mypy_cache')
+$excludeRx = [regex]('\(' + ($exclude -join '|').Replace('.', '\.') + ')(\|$)')
+
+$py = Get-ChildItem -Path $src -Recurse -File -Include *.py |
+      Where-Object { $_.FullName -notmatch $excludeRx } |
+      Sort-Object FullName
+
+$extra = @(
+  (Join-Path $root 'environment.yml'),
+  (Join-Path $root 'README.md')
+) | Where-Object { Test-Path $_ }
+
+$files = @($py) + @($extra)
+
+foreach ($f in $files) {
+  $rel = $f.FullName.Replace("$root", '')
+  "=== $rel ==="
+  ""
+  Get-Content -Path $f.FullName -Raw
+  ""
+}
 ```
 
-Windows / WSL tip:
-If Core runs on Windows and backend in WSL, set BTC_RPC_URL to the Windows host or LAN IP and allow RPC from the WSL subnet.
+Usage:
 
----
-
-## 6) Production
-
-Run Uvicorn behind a reverse proxy (TLS, static files, caching):
-```bash
-uvicorn btc_onchain.main:app --host 0.0.0.0 --port 8000 --workers 2
-```
-
-Serve the built frontend (frontend/dist) via Nginx/Caddy/Traefik and proxy API to the backend.
-Update backend CORS to include the production frontend origin.
-
----
-
-## 7) Optional Makefile
-
-```Makefile
-.PHONY: be fe run dev
-
-be:
-	cd backend && python -m venv .venv && . .venv/bin/activate && 	pip install -r requirements.txt || pip install fastapi "uvicorn[standard]" httpx pydantic
-
-fe:
-	cd frontend && npm install
-
-run:
-	cd backend && . .venv/bin/activate && uvicorn btc_onchain.main:app --reload --port 8000
-
-dev:
-	( cd backend && . .venv/bin/activate && uvicorn btc_onchain.main:app --reload --port 8000 ) & 	( cd frontend && npm run dev )
+```powershell
+cd backend
+.\show.ps1 > dump.txt
 ```
 
 ---
 
-## 8) Contributing
+## Security & Notes
 
-- Keep the Rpc class intact (final).
-- Prefer small, testable functions in btc_onchain/.
-- Frontend fetchers and types live in frontend/src/lib/.
+- Research/visualization only, **not trading advice**.
+- Requires fully synced Bitcoin Core with RPC.
+- In-memory cache, no persistence.
 
 ---
 
-## 9) License
+## Roadmap
 
-TBD.
+- Adaptive `SIGMA` & grid tuning.
+- `PRICE_HINT` support.
+- Persist warm-start ring buffer.
+- UI: multi-grid histograms, decode rate monitoring.
+
+---
+
+## License
+
+*(Add your preferred license here, e.g. MIT or Apache-2.0)*
+
+---

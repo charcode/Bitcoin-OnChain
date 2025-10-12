@@ -1,62 +1,64 @@
+# btc_onchain/core/rnr_engine.py
 from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from ..config import SETTINGS
 from ..models import PriceEstimate
-from ..rnr import rnr_search, rnr_histogram_usd, SearchResult
+from ..rnr import rnr_histogram_usd  # keep your USD hist for debug
+from ..oracle.utxoracle_live import estimate_from_outputs, LiveOracleResult  # NEW
 
-
-def _sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + np.exp(-x))
-
+def _fmt_ts(ts: float | None = None) -> str:
+    t = time.localtime(ts or time.time())
+    return time.strftime("%Y-%m-%d %H:%M:%S", t)
 
 @dataclass
 class RnrEngine:
-    last_result: Optional[SearchResult] = None
+    """
+    Live round-number resonance engine.
+
+    - Consumes mempool outputs (value_btc, weight, first_seen, etc).
+    - Builds log10(BTC) histogram internally (UTXOracle-like).
+    - Slides smooth + spike stencils to get best alignment -> USD price.
+    - Smooths with EMA and exposes curve/confidence for UI.
+    """
     ema_price: Optional[float] = None
-    hist_cache: Dict[int, List[dict]] = field(default_factory=dict)  # grid -> bins list
     last_run_ts: float = 0.0
+    last_curve: List[Tuple[float, float]] = field(default_factory=list)  # (price_usd, score)
+    hist_cache: Dict[int, List[dict]] = field(default_factory=dict)      # grid -> bins list
+    # Latest computed metrics (for API/app_state)
+    last_confidence: Optional[float] = None
+    last_curvature: Optional[float] = None
+    last_samples_used: int = 0
 
-    def compute_confidence(self, res: SearchResult) -> float:
-        z = np.asarray(res.scores, dtype=float)
-        if len(z) < 5:
-            return 0.0
+    def _outs_to_pairs(self, outs: List[dict]) -> List[Tuple[float, float]]:
+        """
+        Convert your mempool-outs dicts to (value_btc, weight) pairs expected by the oracle.
+        Falls back to weight=1.0 if missing.
+        """
+        pairs: List[Tuple[float, float]] = []
+        for o in outs:
+            v = float(o.get("value_btc", 0.0))
+            if v <= 0.0:
+                continue
+            w = float(o.get("weight", 1.0))
+            if not np.isfinite(w) or w <= 0:
+                w = 1.0
+            pairs.append((v, w))
+        return pairs
 
-        peak = float(z[res.best_idx])
-        if peak <= 0:
-            return 0.0
-
-        pos = z[z > 0]
-        med = float(np.median(pos)) if pos.size else 0.0
-        denom = med if med > 1e-9 else (float(np.mean(z)) + 1e-9)
-        c_peak = _sigmoid((peak / (denom + 1e-12)) - 1.0)
-
-        mask = np.ones_like(z, dtype=bool)
-        mask[max(0, res.best_idx - 2):min(len(z), res.best_idx + 3)] = False
-        others = z[mask]
-        second = float(np.max(others)) if others.size else 0.0
-        gap = max(0.0, peak - second)
-        c_prom = _sigmoid((gap / (denom + 1e-12)))
-
-        left = max(0, res.best_idx - 3)
-        right = min(len(z), res.best_idx + 4)
-        local = float(np.sum(z[left:right]))
-        total = float(np.sum(z)) + 1e-12
-        frac = local / total
-        c_sharp = max(0.0, min(1.0, frac))
-
-        curv = float(res.curvature)
-        c_curv = _sigmoid(curv / 5.0)
-
-        conf = (0.45 * c_peak) + (0.30 * c_prom) + (0.15 * c_sharp) + (0.10 * c_curv)
-        return float(max(0.0, min(1.0, conf)))
-
-    def update_hist_cache(self, outs: List[dict], price: float) -> None:
+    def _update_hist_debug(self, outs: List[dict], price: float) -> None:
+        """
+        Keep your debug histogram endpoints working.
+        Creates compact USD histograms around round-number grids at the current price.
+        """
+        if price <= 0.0:
+            self.hist_cache.clear()
+            return
         for g in SETTINGS.rnr_grids[:4]:
             half = SETTINGS.hist_sigma_frac * float(g)
             self.hist_cache[g] = rnr_histogram_usd(
@@ -68,46 +70,70 @@ class RnrEngine:
             )
 
     def run_once(self, outs: List[dict]) -> Optional[PriceEstimate]:
+        # Not enough samples? decay EMA slightly and skip.
         if len(outs) < SETTINGS.min_samples:
             if self.ema_price is not None:
                 self.ema_price = (1.0 - SETTINGS.ema_alpha) * self.ema_price
             self.last_run_ts = time.time()
             return None
 
-        res = rnr_search(
-            outs=outs,
-            price_min=SETTINGS.price_min,
-            price_max=SETTINGS.price_max,
-            price_step=SETTINGS.price_step,
-            sigma_usd=SETTINGS.sigma_usd,
-            grids=SETTINGS.rnr_grids,
-        )
-        self.last_result = res
+        pairs = self._outs_to_pairs(outs)
+        if not pairs:
+            self.last_run_ts = time.time()
+            return None
 
-        p = float(res.best_price)
-        if self.ema_price is None:
-            self.ema_price = p
-        else:
-            a = SETTINGS.ema_alpha
-            self.ema_price = a * p + (1.0 - a) * self.ema_price
+        # Core live UTXOracle-style estimate
+        t0 = time.time()
+        res: LiveOracleResult = estimate_from_outputs(pairs)
+        t1 = time.time()
 
-        conf = self.compute_confidence(res)
-        self.update_hist_cache(outs, price=self.ema_price)
+        # Keep the resonance curve for plotting
+        self.last_curve = list(res.curve_points)
+        # Cache metrics for API consumption
+        self.last_confidence = float(res.confidence)
+        self.last_curvature = float(res.curvature)
+        self.last_samples_used = int(res.samples_used)
+
+        # EMA smoothing
+        est = float(res.price) if np.isfinite(res.price) and res.price > 0 else 0.0
+        if est > 0:
+            if self.ema_price is None:
+                self.ema_price = est
+            else:
+                a = SETTINGS.ema_alpha
+                self.ema_price = a * est + (1.0 - a) * self.ema_price
+
+        # Update debug USD histograms at the *smoothed* price
+        self._update_hist_debug(outs, price=float(self.ema_price or 0.0))
 
         self.last_run_ts = time.time()
+
+        # (Optional) tiny log so you can see work + timing
+        print(
+            f"[{_fmt_ts()}] [rnr] samples={len(pairs):5d} "
+            f"est=${est:,.0f} ema=${(self.ema_price or 0):,.0f} "
+            f"conf={res.confidence:.3f} curv={res.curvature:.3f} "
+            f"dt={(t1-t0)*1000:.1f}ms"
+        )
+
         return PriceEstimate(
             t=self.last_run_ts,
-            price=float(self.ema_price),
-            confidence=float(conf),
+            price=float(self.ema_price or 0.0),
+            confidence=float(res.confidence),
             curvature=float(res.curvature),
-            samples_used=len(outs),
+            samples_used=int(res.samples_used),
         )
 
     async def run_loop(self, get_outs_callable, stop_evt: asyncio.Event) -> None:
+        """
+        Periodic task; call with something like:
+            engine = RnrEngine()
+            await engine.run_loop(lambda: list(state.mempool_outputs.values()), stop_evt)
+        """
         while not stop_evt.is_set():
             try:
                 outs = get_outs_callable()
                 self.run_once(outs)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[{_fmt_ts()}] [rnr error] {e}")
             await asyncio.sleep(SETTINGS.rnr_interval)

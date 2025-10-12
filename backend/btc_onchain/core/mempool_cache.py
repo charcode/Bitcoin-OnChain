@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
 import time
+import math
+from bisect import bisect_right
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Tuple
@@ -89,6 +91,66 @@ class MempoolCache:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{ts}] [mempool] decoded={dec:4d} added_vouts={added:5d} total_cached={len(self.outputs):7d}")
         return dec, added
+
+    def build_heatmap(self, bucket_seconds: int, max_buckets: int, bin_edges: List[int]):
+        self.prune()
+        bucket_seconds = max(1, int(bucket_seconds))
+        max_buckets = max(1, int(max_buckets))
+        edges = sorted({int(e) for e in bin_edges if int(e) >= 0})
+        if not edges:
+            edges = [0]
+        edges = list(edges)
+        now = time.time()
+        current_bucket_start = math.floor(now / bucket_seconds) * bucket_seconds
+        first_bucket_start = current_bucket_start - bucket_seconds * (max_buckets - 1)
+
+        matrix = [[0 for _ in range(len(edges))] for _ in range(max_buckets)]
+        overflow = False
+        total = 0
+
+        for out in reversed(self.outputs):
+            ts = out.ts
+            if ts < first_bucket_start:
+                break
+            bucket_idx = int((ts - first_bucket_start) // bucket_seconds)
+            if bucket_idx < 0 or bucket_idx >= max_buckets:
+                continue
+            sats = int(round(out.value_btc * 100_000_000))
+            total += 1
+            idx = bisect_right(edges, sats) - 1
+            if idx < 0:
+                overflow = True
+                continue
+            if idx >= len(edges):
+                overflow = True
+                idx = len(edges) - 1
+            matrix[bucket_idx][idx] += 1
+
+        max_count = 0
+        for row in matrix:
+            for val in row:
+                if val > max_count:
+                    max_count = val
+
+        buckets = []
+        for i, counts in enumerate(matrix):
+            start = first_bucket_start + i * bucket_seconds
+            end = start + bucket_seconds
+            buckets.append({
+                "start": float(start),
+                "end": float(end),
+                "counts": [int(c) for c in counts],
+            })
+
+        return {
+            "t": float(now),
+            "bucket_seconds": bucket_seconds,
+            "bin_edges": [int(e) for e in edges],
+            "buckets": buckets,
+            "max_count": int(max_count),
+            "total_samples": int(total),
+            "overflow": overflow,
+        }
 
     async def run(self, rpc: Rpc, stop_evt: asyncio.Event) -> None:
         while not stop_evt.is_set():

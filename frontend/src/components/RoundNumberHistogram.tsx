@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Bar, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Legend,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+  Legend,
 } from "recharts";
 
 type HistBin = { price: number; count: number; weight_sum: number };
@@ -8,51 +16,66 @@ type HistogramResp = {
   t: number;
   grid: number;
   span: number;
-  window: number;     // half-width used for inclusion around anchors
-  used_price: number; // USD/BTC used to convert outputs
+  window: number;
+  used_price: number;
   bins: HistBin[];
   total_samples: number;
 };
 
+type Props = {
+  apiBase?: string;
+  grid: number;
+  span: number;
+  mode: "count" | "weight_sum";
+  refreshToken: number;
+};
+
+const DEFAULT_BASE = "http://127.0.0.1:8000";
+
 function fmtUSD(n: number) {
-  if (!isFinite(n)) return "—";
-  if (n >= 1000) return `$${(n/1000).toFixed(1)}k`;
-  return `$${n.toFixed(0)}`;
+  if (!isFinite(n)) return "--";
+  if (n >= 1000) return "$" + (n / 1000).toFixed(1) + "k";
+  return "$" + n.toFixed(0);
 }
 
 function nearestAnchor(usedPrice: number, grid: number) {
+  if (grid <= 0) return usedPrice;
   return Math.round(usedPrice / grid) * grid;
 }
 
 export default function RoundNumberHistogram({
-  apiBase = "http://127.0.0.1:8000",
-}: { apiBase?: string }) {
-  const [grid, setGrid] = useState<number>(100);
-  const [span, setSpan] = useState<number>(8);
-  const [mode, setMode] = useState<"count" | "weight_sum">("count");
+  apiBase = DEFAULT_BASE,
+  grid,
+  span,
+  mode,
+  refreshToken,
+}: Props) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<HistogramResp | null>(null);
 
-  const fetchIt = async () => {
+  const fetchHistogram = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const url = `${apiBase}/debug/histogram?grid=${grid}&span=${span}`;
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-      const j = (await r.json()) as HistogramResp;
-      setData(j);
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
+      const url = apiBase + "/debug/histogram?grid=" + grid + "&span=" + span;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(String(resp.status) + " " + resp.statusText);
+      }
+      const payload = (await resp.json()) as HistogramResp;
+      setData(payload);
+    } catch (error: any) {
+      setErr(error?.message ?? String(error));
       setData(null);
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiBase, grid, span]);
 
-  useEffect(() => { fetchIt(); /* initial */ }, []); // eslint-disable-line
-  useEffect(() => { fetchIt(); }, [grid, span]);     // refetch on controls
+  useEffect(() => {
+    fetchHistogram();
+  }, [fetchHistogram, refreshToken]);
 
   const center = useMemo(
     () => (data ? nearestAnchor(data.used_price, data.grid) : 0),
@@ -60,95 +83,64 @@ export default function RoundNumberHistogram({
   );
 
   const chartData = useMemo(() => {
-    if (!data) return [];
-    // Keep the bins in order; map to a presentation-friendly shape
-    return data.bins.map(b => ({
-      anchor: b.price,
-      label: fmtUSD(b.price),
-      count: b.count,
-      weight_sum: b.weight_sum,
+    if (!data) return [] as Array<{ anchor: string; count: number; weight_sum: number }>;
+    return data.bins.map((bin) => ({
+      anchor: fmtUSD(bin.price),
+      count: bin.count,
+      weight_sum: bin.weight_sum,
     }));
   }, [data]);
 
+  const legendLabel = mode === "count" ? "Count" : "Weight sum";
+  const barFill = mode === "count" ? "#60a5fa" : "#fbbf24";
+
   return (
-    <div className="w-full space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="flex flex-col">
-          <label className="text-xs text-gray-500">Grid ($)</label>
-          <select
-            className="border rounded px-2 py-1"
-            value={grid}
-            onChange={e => setGrid(Number(e.target.value))}
-          >
-            {[10,25,50,100,250,500,1000,2000,5000,10000].map(g => (
-              <option key={g} value={g}>{g}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex flex-col">
-          <label className="text-xs text-gray-500">Span (± multiples)</label>
-          <input
-            type="range" min={1} max={20}
-            value={span}
-            onChange={e => setSpan(Number(e.target.value))}
-          />
-          <div className="text-xs text-gray-500">{span}</div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            className={`px-3 py-1 rounded border ${mode === "count" ? "bg-gray-100" : ""}`}
-            onClick={() => setMode("count")}
-          >
-            Count
-          </button>
-          <button
-            className={`px-3 py-1 rounded border ${mode === "weight_sum" ? "bg-gray-100" : ""}`}
-            onClick={() => setMode("weight_sum")}
-          >
-            Weight
-          </button>
-        </div>
-
-        <button
-          onClick={fetchIt}
-          className="ml-auto px-3 py-1 rounded bg-black text-white"
-          disabled={loading}
-        >
-          {loading ? "Loading…" : "Refresh"}
-        </button>
+    <div className="space-y-4">
+      <div className="text-sm text-slate-400">
+        {loading && <span>Loading histogram...</span>}
+        {!loading && data && (
+          <span>
+            Samples {data.total_samples.toLocaleString()} | window {fmtUSD(data.window)} | center {fmtUSD(center)}
+          </span>
+        )}
+        {!loading && !data && !err && <span>No data available.</span>}
       </div>
 
-      {err && <div className="text-red-600 text-sm">Error: {err}</div>}
+      {err && <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-red-300">{err}</div>}
+
+      <div className="h-72 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
+            <CartesianGrid strokeDasharray="2 2" stroke="#1f2937" />
+            <XAxis
+              dataKey="anchor"
+              angle={-35}
+              textAnchor="end"
+              height={60}
+              tick={{ fill: "#94a3b8", fontSize: 11 }}
+            />
+            <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{ backgroundColor: "#09090b", borderRadius: 12, border: "1px solid #1f2937" }}
+              formatter={(value: number) => value.toLocaleString()}
+              labelFormatter={(label: string) => "Anchor " + label}
+            />
+            <Legend wrapperStyle={{ color: "#cbd5f5" }} />
+            {data && (
+              <ReferenceLine x={fmtUSD(center)} stroke="#fbbf24" strokeWidth={2} ifOverflow="extendDomain" />
+            )}
+            <Bar dataKey={mode} name={legendLabel} fill={barFill} radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
 
       {data && (
-        <>
-          <div className="text-sm text-gray-600">
-            Using price ≈ <b>{fmtUSD(data.used_price)}</b>, window ±<b>{fmtUSD(data.window)}</b> around each anchor.{" "}
-            Samples: <b>{data.total_samples}</b>. Center anchor: <b>{fmtUSD(center)}</b>.
-          </div>
-
-          <div className="w-full h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" angle={-35} textAnchor="end" height={60} />
-                <YAxis allowDecimals={false} />
-                <Tooltip
-                  formatter={(val: any, name: any) =>
-                    [val as number, name === "count" ? "Count" : "Weight sum"]
-                  }
-                  labelFormatter={(label: string) => `Anchor ${label}`}
-                />
-                <Legend />
-                {/* Draw a vertical line at the center anchor */}
-                <ReferenceLine x={fmtUSD(center)} strokeWidth={2} />
-                <Bar dataKey={mode} name={mode === "count" ? "Count" : "Weight sum"} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </>
+        <div className="grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+          <div>Updated {new Date(data.t * 1000).toLocaleTimeString()}</div>
+          <div>Grid {fmtUSD(data.grid)} | span x{span}</div>
+          <div>Mode {legendLabel.toLowerCase()}</div>
+          <div>Used price {fmtUSD(data.used_price)}</div>
+        </div>
       )}
     </div>
   );

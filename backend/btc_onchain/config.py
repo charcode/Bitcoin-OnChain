@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import os
 from pathlib import Path
 from typing import List
@@ -38,6 +38,35 @@ def _env_str(names: str | List[str], default: str) -> str:
     v = _first_env(names, None)
     return v if v is not None else default
 
+def _env_bool(names: str | List[str], default: bool) -> bool:
+    if isinstance(names, str): names = [names]
+    v = _first_env(names, None)
+    if v is None:
+        return default
+    if isinstance(v, str):
+        if v.lower() in ("1", "true", "yes", "on"):
+            return True
+        if v.lower() in ("0", "false", "no", "off"):
+            return False
+    return bool(v)
+
+
+def _env_int_list(name: str, default: List[int]) -> List[int]:
+    raw = os.getenv(name)
+    if not raw:
+        return list(default)
+    out: List[int] = []
+    for part in raw.replace(';', ',').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out if out else list(default)
+
+
 
 class Settings(BaseModel):
     # RPC
@@ -76,6 +105,23 @@ class Settings(BaseModel):
     # +/- fraction of the grid for histogram windows
     hist_sigma_frac: float = Field(default_factory=lambda: _env_float("HIST_SIGMA_FRAC", 0.20))
 
+    # Heatmap diagnostics / visualization
+    heatmap_bucket_seconds: int = Field(default_factory=lambda: _env_int("HEATMAP_BUCKET_SECONDS", 60))
+    heatmap_max_buckets: int = Field(default_factory=lambda: _env_int("HEATMAP_MAX_BUCKETS", 40))
+    heatmap_bin_edges_sats: List[int] = Field(
+        default_factory=lambda: _env_int_list("HEATMAP_BIN_EDGES_SATS", [0, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000])
+    )
+    distribution_bin_size_sats: int = Field(default_factory=lambda: _env_int("DIST_BIN_SIZE_SATS", 100_000))
+    distribution_bin_count: int = Field(default_factory=lambda: _env_int("DIST_BIN_COUNT", 60))
+    distribution_block_max: int = Field(default_factory=lambda: _env_int("DIST_BLOCK_MAX", 288))
+    block_fetch_max: int = Field(default_factory=lambda: _env_int("BLOCK_FETCH_MAX", 500))
+    fulcrum_enabled: bool = Field(default_factory=lambda: _env_bool("FULCRUM_ENABLED", True))
+    fulcrum_host: str = Field(default_factory=lambda: _env_str("FULCRUM_HOST", "127.0.0.1"))
+    fulcrum_port: int = Field(default_factory=lambda: _env_int("FULCRUM_PORT", 50002))
+    fulcrum_ssl: bool = Field(default_factory=lambda: _env_bool("FULCRUM_SSL", True))
+    fulcrum_ssl_verify: bool = Field(default_factory=lambda: _env_bool("FULCRUM_SSL_VERIFY", False))
+    fulcrum_request_timeout: float = Field(default_factory=lambda: _env_float("FULCRUM_TIMEOUT", 30.0))
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -87,3 +133,5 @@ SETTINGS = Settings()
 if SETTINGS.sigma_usd < 1.0:
     # Treat tiny values as misconfigured and bump to default
     SETTINGS.sigma_usd = 75.0
+
+

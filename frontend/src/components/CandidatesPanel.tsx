@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { getCandidates } from "../lib/api";
 import type { CandidatesInfo } from "../lib/types";
 
@@ -25,26 +25,46 @@ export default function CandidatesPanel() {
       } catch {}
     };
     tick();
-    const id = setInterval(tick, 5000); // keep it visible & fresh
-    return () => { alive = false; clearInterval(id); };
+    const id = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
   return (
-    <section className="rounded-2xl p-5 bg-zinc-900 shadow mb-6">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-xl font-semibold">Mempool Candidates</h2>
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-[0.35em] text-slate-300">Mempool coverage</h3>
+          <p className="mt-1 text-sm text-slate-400">Live candidate counts from the cache.</p>
+        </div>
         <button
           onClick={fetchNow}
           disabled={loading}
-          className="px-3 py-1.5 text-sm rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50"
+          className="rounded-full border border-slate-600/70 bg-slate-800/70 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-slate-700 disabled:opacity-60"
         >
           {loading ? "Refreshing..." : "Refresh"}
         </button>
       </div>
-      <div className="text-sm text-zinc-300">
-        <div>Total outputs cached: <span className="font-semibold">{data?.total_outputs_cached ?? "—"}</span></div>
-        <div>Usable non-change: <span className="font-semibold">{data?.usable ?? "—"}</span></div>
+
+      <div className="grid gap-4 rounded-2xl border border-slate-700/60 bg-slate-900/70 p-5 text-sm text-slate-300">
+        <div className="flex items-center justify-between">
+          <span className="text-xs uppercase tracking-wide text-slate-400">Total outputs cached</span>
+          <span className="text-lg font-semibold text-emerald-300">
+            {data?.total_outputs_cached !== undefined ? data.total_outputs_cached.toLocaleString() : "--"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs uppercase tracking-wide text-slate-400">Usable non-change</span>
+          <span className="text-lg font-semibold text-sky-300">
+            {data?.usable !== undefined ? data.usable.toLocaleString() : "--"}
+          </span>
+        </div>
+        <div className="rounded-xl border border-slate-700/50 bg-slate-800/70 px-4 py-3 text-xs text-slate-400">
+          Updated {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
