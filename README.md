@@ -1,4 +1,4 @@
-# btc-onchain — Live RNR Nowcaster
+﻿# btc-onchain — Live RNR Nowcaster
 
 Estimate the **BTC/USD price** *purely from on-chain and mempool activity* by detecting **Round-Number Resonance (RNR)** — clustering of transaction output values around round-dollar amounts across multiple grid sizes (e.g., $50, $100, $500).  
 No external price feed is used.
@@ -11,10 +11,10 @@ This project connects directly to a local Bitcoin node and continuously scans th
 
 ### Processing pipeline
 
-- **Bitcoin node RPC** →  
-- **MempoolCache** (rolling outputs window) →  
-- **RnrEngine** (multi-grid resonance computation, baseline removal, peak detection) →  
-- **FastAPI API** →  
+- **Bitcoin node RPC** ?  
+- **MempoolCache** (rolling outputs window) ?  
+- **RnrEngine** (multi-grid resonance computation, baseline removal, peak detection) ?  
+- **FastAPI API** ?  
 - **React/Vite frontend dashboard**
 
 ---
@@ -137,10 +137,10 @@ uvicorn --host 127.0.0.1 --port 8000 btc_onchain.main:app
 Endpoints:
 
 - `GET /health`
-- `GET /price/now` → `{ t, price, confidence, curvature, samples_used }`
-- `GET /rnr/curve` → `{ t, points: [{p, s}, ...] }`
-- `GET /debug/candidates` → `{ total_outputs_cached, usable }`
-- `GET /debug/histogram?grid=100&span=8` → histogram bins near round-dollar anchors.
+- `GET /price/now` ? `{ t, price, confidence, curvature, samples_used }`
+- `GET /rnr/curve` ? `{ t, points: [{p, s}, ...] }`
+- `GET /debug/candidates` ? `{ total_outputs_cached, usable }`
+- `GET /debug/histogram?grid=100&span=8` ? histogram bins near round-dollar anchors.
 
 ### Frontend
 
@@ -178,7 +178,7 @@ Environment variables (see `config.py`):
 ## Algorithm
 
 1. **Scoring**: For candidate price `p`, convert outputs `v_btc` to USD, compute Gaussian kernel score at nearest round-dollar anchors for each grid, scale by `1/sqrt(g)`, sum.
-2. **Baseline removal**: median + slow EMA baseline, subtract → resonance curve.
+2. **Baseline removal**: median + slow EMA baseline, subtract ? resonance curve.
 3. **Best price**: `argmax` resonance.
 4. **Confidence**: peak sharpness (discrete curvature) × peak height.
 5. **Histogram**: bins around anchors near estimate.
@@ -198,6 +198,31 @@ All panels update automatically; no tab switching required.
 ---
 
 ## Troubleshooting
+
+---
+
+## Credits
+
+This project draws significant inspiration from UTXOracle by Simple Steve:
+
+- UTXOracle live site: https://utxo.live/
+- Author (X/Twitter): @SteveSimple
+- This project author (X/Twitter): @charbel_g
+
+Thank you to Simple Steve for his excellent work on UTXOracle. UTXOracle focuses on providing a historical lookback view (estimating price for a chosen date in the past). This project’s Nowcaster adapts similar round‑number resonance ideas to the present by applying them to the current mempool, aiming to infer a live BTC/USD estimate from on‑chain activity alone.
+
+---
+
+## Get Started (Clone)
+
+Clone via SSH and jump in:
+
+```
+git clone git@github.com:charcode/Bitcoin-OnChain.git
+cd Bitcoin-OnChain
+```
+
+For local dev, Docker, and environment variables, see DEPLOYMENT.md.
 
 - **Price stuck at lower bound**: widen `[PRICE_MIN, PRICE_MAX]`; check `SIGMA`.
 - **Confidence ~0**: increase lookback or decode rate, adjust `SIGMA`.
@@ -277,3 +302,5 @@ cd backend
 *(Add your preferred license here, e.g. MIT or Apache-2.0)*
 
 ---
+
+
