@@ -2,6 +2,7 @@
 
 import ControlOverlay from "./components/ControlOverlay";
 import PriceCards from "./components/PriceCards";
+import PriceBanner from "./components/PriceBanner";
 import RoundNumberHistogram from "./components/RoundNumberHistogram";
 import TransactionsHeatmap from "./components/TransactionsHeatmap";
 import RoundUsdHeatmap from "./components/RoundUsdHeatmap";
@@ -10,6 +11,7 @@ import CurveChart from "./components/CurveChart";
 import CandidatesPanel from "./components/CandidatesPanel";
 import { getPriceNow, getStencilPrice, getRnrCurve } from "./lib/api";
 import type { PriceNow, StencilPriceResp, CurveResp } from "./lib/types";
+import { usePriceStore } from "./state/usePriceStore.tsx";
 
 const HIST_GRID_OPTIONS = [10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000];
 const HEAT_BUCKET_OPTIONS = [15, 30, 60, 120, 300];
@@ -42,6 +44,7 @@ const formatSats = (value: number) => {
 };
 
 export default function App() {
+  const { setLatest } = usePriceStore();
   const [nowcast, setNowcast] = useState<PriceNow | null>(null);
   const [histGrid, setHistGrid] = useState<number>(100);
   const [histSpan, setHistSpan] = useState<number>(8);
@@ -68,18 +71,31 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let inFlight = false;
 
     const tickPrice = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const p = await getPriceNow();
-        if (alive) setNowcast(p);
+        if (alive) {
+          setNowcast(p);
+          // Lift into price store for banner/state
+          // Use client timestamp to reflect UI update cadence (~1 Hz)
+          const tsMs = Date.now();
+          if (p?.price) {
+            setLatest({ ts: tsMs, price: p.price, confidence: p.confidence });
+          }
+        }
       } catch {
         // ignore transient errors
+      } finally {
+        inFlight = false;
       }
     };
 
     tickPrice();
-    const id = window.setInterval(tickPrice, 4000);
+    const id = window.setInterval(tickPrice, 1000);
     return () => {
       alive = false;
       window.clearInterval(id);
@@ -161,8 +177,8 @@ export default function App() {
       <div className="gradient-orb gradient-orb--one" />
       <div className="gradient-orb gradient-orb--two" />
       <div className="grid-overlay" />
-      <div className="relative mx-auto w-full max-w-screen-2xl px-6 pb-16 pt-12 lg:px-10">
-        <header className="rounded-[32px] border border-slate-800/60 bg-slate-900/60 p-10 shadow-[0_40px_110px_rgba(4,8,35,0.55)] backdrop-blur">
+      <div className="container mx-auto max-w-screen-xl px-4 md:px-6 lg:px-8 pb-16 pt-10">
+        <header className="pb-4">
           <div className="grid gap-10 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
             <div className="space-y-6">
               <span className="inline-flex items-center rounded-full border border-slate-500/30 bg-slate-500/10 px-4 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200/80">
@@ -174,6 +190,7 @@ export default function App() {
               <p className="max-w-2xl text-base leading-relaxed text-slate-200/80 sm:text-lg">
                 Blend mempool round-number resonance with a calibrated historical sweep. Adjust sampling windows, compare live and anchor prices, and inspect how USD round amounts cluster over the last {blockLookback.toLocaleString()} blocks.
               </p>
+              <PriceBanner />
               <div className="flex flex-wrap items-center gap-4 text-xs text-slate-200/70">
                 <div className="rounded-full border border-slate-500/30 bg-slate-800/70 px-4 py-1">
                   Refresh cadence <span className="font-semibold text-slate-100">4s</span>
@@ -191,7 +208,7 @@ export default function App() {
               </div>
             </div>
             <div className="flex h-full items-end justify-end">
-              <div className="w-full max-w-sm rounded-[28px] border border-slate-500/30 bg-slate-900/80 p-6 shadow-[0_20px_50px_rgba(2,6,23,0.55)]">
+              <div className="w-full max-w-sm rounded-[20px] border border-slate-700/30 bg-slate-900/80 p-6 shadow-[0_20px_50px_rgba(2,6,23,0.45)]">
                 <div className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-400">Nowcaster snapshot</div>
                 <div className="mt-5 space-y-4 text-sm text-slate-300/90">
                   <div className="flex items-baseline justify-between">
@@ -215,9 +232,9 @@ export default function App() {
           </div>
         </header>
 
-        <main className="mt-12 grid gap-10 xl:grid-cols-[minmax(0,2.2fr)_minmax(320px,1fr)]">
-          <div className="space-y-10">
-            <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.55)]">
+        <main className="mt-12 grid gap-8 xl:grid-cols-[minmax(0,2.2fr)_minmax(320px,1fr)]">
+          <div className="space-y-8">
+            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
               <PriceCards
                 nowcast={nowcast}
                 stencil={stencil}
@@ -226,11 +243,11 @@ export default function App() {
               />
             </section>
 
-            <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.55)]">
+            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
               <CurveChart curve={curve} />
             </section>
 
-            <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-8 shadow-[0_20px_70px_rgba(4,6,25,0.5)]">
+            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-8 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
               <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold text-slate-50">Historical round-number heatmap</h2>
@@ -253,7 +270,7 @@ export default function App() {
             </section>
 
             <div className="grid gap-10 lg:grid-cols-2">
-              <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.5)]">
+              <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
                 <header className="mb-6 flex items-center justify-between">
                   <h2 className="text-xl font-semibold text-slate-50">Round number output</h2>
                   <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
@@ -269,7 +286,7 @@ export default function App() {
                 />
               </section>
 
-              <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.5)]">
+              <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
                 <header className="mb-6 flex items-center justify-between">
                   <h2 className="text-xl font-semibold text-slate-50">Live mempool heatmap</h2>
                   <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
@@ -284,7 +301,7 @@ export default function App() {
               </section>
             </div>
 
-            <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.5)] lg:col-span-2">
+            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)] lg:col-span-2">
               <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold text-slate-50">Transaction size distribution</h2>
@@ -309,7 +326,7 @@ export default function App() {
           </div>
 
           <aside className="space-y-10 xl:sticky xl:top-12">
-            <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-7 shadow-[0_20px_70px_rgba(4,6,25,0.55)]">
+            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-7 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
               <ControlOverlay
                 histGrid={histGrid}
                 histSpan={histSpan}
@@ -346,7 +363,7 @@ export default function App() {
               />
             </section>
 
-            <section className="rounded-[28px] border border-slate-800/60 bg-slate-900/70 p-7 shadow-[0_20px_70px_rgba(4,6,25,0.55)]">
+            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-7 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
               <CandidatesPanel />
             </section>
           </aside>
