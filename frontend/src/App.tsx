@@ -352,7 +352,7 @@ export default function App() {
                 onHistModeChange={setHistMode}
                 onBucketChange={setBucketSeconds}
                 onColumnChange={setColumnCount}
-                onBlockLookbackChange={setBlockLookback}
+                onBlockLookbackChange={(v) => setBlockLookback(Math.max(1, Math.min(144, v)))}
                 onDistSourceChange={setDistSource}
                 onDistBinSizeChange={setDistBinSize}
                 onDistBinCountChange={(value) => setDistBinCount(Math.min(200, Math.max(10, value)))}

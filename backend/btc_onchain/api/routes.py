@@ -270,18 +270,49 @@ async def debug_stencil_price(
     st = _state(request)
     start_height, end_height, tip_height, count = await _resolve_block_range(st, start, end)
 
+    # Serve cached result for the common case "last N blocks"
+    if (
+        st.stencil_cache is not None
+        and st.stencil_cache_start == start_height
+        and st.stencil_cache_end == end_height
+    ):
+        cached = st.stencil_cache
+        return StencilPriceResp(
+            start_height=start_height,
+            end_height=end_height,
+            block_count=count,
+            tip_height=tip_height,
+            **cached,
+        )
+
     try:
         result = await compute_stencil_price(st.rpc, st.fulcrum, start_height, end_height)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return StencilPriceResp(
+    resp = StencilPriceResp(
         start_height=start_height,
         end_height=end_height,
         block_count=count,
         tip_height=tip_height,
         **result,
     )
+    # Update cache for "last N blocks"
+    try:
+        st.stencil_cache = {
+            "start_height": start_height,
+            "end_height": end_height,
+            "block_count": count,
+            **result,
+        }
+        st.stencil_cache_start = start_height
+        st.stencil_cache_end = end_height
+        st.stencil_estimated_price = float(result.get("estimated_price", 0.0))
+        st.stencil_cache_ts = time.time()
+    except Exception:
+        pass
+
+    return resp
 
 
 @router.get("/debug/heatmap", response_model=HeatmapResp)

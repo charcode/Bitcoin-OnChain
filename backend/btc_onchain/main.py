@@ -40,6 +40,7 @@ async def _startup():
     _TASKS[:] = [
         asyncio.create_task(app.state.app_state.refresh_loop(), name="mempool-refresh"),
         asyncio.create_task(app.state.app_state.rnr_loop(), name="rnr-loop"),
+        asyncio.create_task(app.state.app_state.stencil_loop(), name="stencil-loop"),
     ]
     app.include_router(api_router)
 

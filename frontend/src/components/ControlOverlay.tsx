@@ -92,7 +92,7 @@ const ControlOverlay: React.FC<Props> = ({
   const gridIndex = optionIndex(gridOptions, histGrid);
   const bucketIndex = optionIndex(bucketOptions, bucketSeconds);
   const columnIndex = optionIndex(columnOptions, columnCount);
-  const blockIndex = optionIndex(blockOptions, blockLookback);
+  // blockLookback now uses a continuous slider (1..144); blockOptions kept for backward-compat props
   const distSizeIndex = optionIndex(distBinSizeOptions, distBinSize);
 
   const baseToggle = "flex-1 px-3 py-2 text-xs font-semibold uppercase tracking-wider transition";
@@ -187,11 +187,11 @@ const ControlOverlay: React.FC<Props> = ({
           <div className="text-xs uppercase tracking-wide text-slate-400">Historical lookback (blocks)</div>
           <input
             type="range"
-            min={0}
-            max={blockOptions.length - 1}
+            min={1}
+            max={144}
             step={1}
-            value={blockIndex}
-            onChange={(event) => onBlockLookbackChange(blockOptions[Number(event.target.value)])}
+            value={Math.max(1, Math.min(144, blockLookback))}
+            onChange={(event) => onBlockLookbackChange(Number(event.target.value))}
             className="w-full accent-violet-400"
           />
           <div className="text-base font-semibold text-violet-200">last {blockLookback.toLocaleString()} blocks</div>
