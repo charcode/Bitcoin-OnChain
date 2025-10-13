@@ -49,8 +49,8 @@ backend/
       rnr_engine.py         # runs rnr_search in a thread; stores latest results & hist cache
 frontend/
   ... (React/Vite app)
-show.ps1                    # dumps backend files + README.md + environment.yml
-environment.yml             # Anaconda env spec
+show.ps1                    # dumps backend files + README.md + environment.yaml
+environment.yaml            # Conda env spec
 ```
 
 ---
@@ -77,11 +77,11 @@ rpcport=8332
 
 ```powershell
 cd backend
-conda env create -f environment.yml
+conda env create -f environment.yaml
 conda activate btc-onchain
 ```
 
-Example `environment.yml`:
+Example `environment.yaml`:
 
 ```yaml
 name: btc-onchain
@@ -239,7 +239,7 @@ For local dev, Docker, and environment variables, see DEPLOYMENT.md.
 
 ## Export helper (PowerShell)
 
-`show.ps1` dumps backend sources + README + environment.yml:
+`show.ps1` dumps backend sources + README + environment.yaml:
 
 ```powershell
 # show.ps1 — dump backend sources + env + README
@@ -256,7 +256,7 @@ $py = Get-ChildItem -Path $src -Recurse -File -Include *.py |
       Sort-Object FullName
 
 $extra = @(
-  (Join-Path $root 'environment.yml'),
+  (Join-Path $root 'environment.yaml'),
   (Join-Path $root 'README.md')
 ) | Where-Object { Test-Path $_ }
 
