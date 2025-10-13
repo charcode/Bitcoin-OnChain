@@ -6,6 +6,31 @@ const USD = new Intl.NumberFormat(undefined, {
   currency: "USD",
   maximumFractionDigits: 0,
 });
+const USD_SIGNED_0 = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+  signDisplay: "always",
+});
+const USD_SIGNED_2 = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+  signDisplay: "always",
+});
+const PCT_SIGNED_2 = new Intl.NumberFormat(undefined, {
+  style: "percent",
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+  signDisplay: "always",
+});
+const PCT_SIGNED_4 = new Intl.NumberFormat(undefined, {
+  style: "percent",
+  maximumFractionDigits: 4,
+  minimumFractionDigits: 4,
+  signDisplay: "always",
+});
 
 function formatTime(ts: number | undefined) {
   if (!ts || !Number.isFinite(ts)) return "Updated --";
@@ -32,7 +57,8 @@ function colorFromDelta(prev?: number, curr?: number): { h: number; s: number; l
   const h = up ? 145 : 2; // greenish vs red
   const s = 90;
   const l = 65;
-  const aText = Math.max(0.35, Math.min(1, t + 0.35));
+  // Visible floor so even $1 moves tint subtly
+  const aText = Math.max(0.40, Math.min(1, t + 0.35));
   const aGlow = Math.min(0.35 + t * 0.3, 0.65);
   return { h, s, l, aText, aGlow };
 }
@@ -65,13 +91,21 @@ export default function PriceBanner() {
     return { textColor, glow };
   }, [base, flash]);
 
+  // Delta display (USD and percent) using same delta pipeline
+  const prevPrice = previous?.price;
+  const deltaAbs = prevPrice != null && price != null ? price - prevPrice : undefined;
+  const deltaPct = prevPrice != null && price != null && prevPrice !== 0 ? (price - prevPrice) / prevPrice : undefined;
+  const deltaUsdLabel = deltaAbs != null && isFinite(deltaAbs) ? USD_SIGNED_2.format(deltaAbs) : "--";
+  const deltaPctLabel = deltaPct != null && isFinite(deltaPct) ? PCT_SIGNED_2.format(deltaPct) : "--";
+  const deltaTextColor = deltaPct == null || deltaPct === 0 ? "hsla(0,0%,80%,0.85)" : textColor;
+
   const priceLabel = price !== null ? USD.format(price) : "--";
   const timeLabel = "Updated " + formatTime(lastTs);
 
   return (
     <div className="mt-4">
       <div
-        className="select-none font-extrabold leading-none tracking-tight whitespace-nowrap tabular-nums"
+        className="select-none font-extrabold leading-none tracking-tight whitespace-nowrap tabular-nums flex flex-wrap items-baseline gap-x-3 gap-y-1"
         style={{
           color: textColor,
           textShadow: `0 0 22px ${glow}`,
@@ -82,36 +116,17 @@ export default function PriceBanner() {
           transition: "color 400ms ease, text-shadow 400ms ease, transform 220ms ease-out",
         }}
       >
-        {priceLabel}
+        <span>{priceLabel}</span>
+        <span
+          className="font-semibold align-baseline"
+          style={{ color: deltaTextColor, fontSize: "clamp(12px, 1.7vw, 16px)", transition: "color 400ms ease" }}
+        >
+          {deltaAbs != null && deltaPct != null ? `${deltaUsdLabel} (${deltaPctLabel})` : "--"}
+        </span>
       </div>
       <div className="mt-2 text-slate-400" style={{ opacity: 0.8, fontSize: "clamp(12px, 1.7vw, 16px)" }}>{timeLabel}</div>
 
-      {import.meta.env.DEV && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
-          <span className="text-slate-400">Debug ticks:</span>
-          {[
-            { label: "-1.0%", factor: 0.99 },
-            { label: "-0.3%", factor: 0.997 },
-            { label: "+0.3%", factor: 1.003 },
-            { label: "+1.0%", factor: 1.01 },
-          ].map((btn) => (
-            <button
-              key={btn.label}
-              type="button"
-              className="rounded-full border border-slate-600/60 bg-slate-800/60 px-2.5 py-1 text-slate-200 hover:bg-slate-700"
-              onClick={() => {
-                // simulate a tick around the latest value
-                const base = latest?.price ?? 100000;
-                const next = Math.max(1, base * btn.factor);
-                const ts = Date.now();
-                setLatest({ ts, price: next, confidence: latest?.confidence });
-              }}
-            >
-              {btn.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Debug controls removed; color pipeline driven purely by live updates */}
     </div>
   );
 }
