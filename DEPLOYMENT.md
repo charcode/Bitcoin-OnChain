@@ -11,15 +11,14 @@ cd Bitcoin-OnChain
 
 ## 2) Local development
 
-### Backend (FastAPI)
+### Backend (FastAPI) — Conda
 
-Requirements: Python 3.11+, a local Bitcoin node with RPC.
+Requirements: Conda (Anaconda/Miniconda), a local Bitcoin node with RPC.
 
 ```
 cd backend
-python -m venv .venv
-./.venv/Scripts/activate  # Windows Powershell
-pip install -r requirements.txt  # or use environment.yml with conda
+conda env create -f environment.yaml   # creates env named "btc-onchain"
+conda activate btc-onchain
 uvicorn --host 127.0.0.1 --port 8000 btc_onchain.main:app
 ```
 
