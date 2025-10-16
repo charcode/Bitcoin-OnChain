@@ -16,7 +16,7 @@ except Exception:
     pass
 
 
-def _first_env(name_options: List[str], default: str | int | float):
+def _first_env(name_options: List[str], default: str | int | float | None):
     for n in name_options:
         v = os.getenv(n)
         if v is not None:
@@ -50,7 +50,6 @@ def _env_bool(names: str | List[str], default: bool) -> bool:
             return False
     return bool(v)
 
-
 def _env_int_list(name: str, default: List[int]) -> List[int]:
     raw = os.getenv(name)
     if not raw:
@@ -66,6 +65,12 @@ def _env_int_list(name: str, default: List[int]) -> List[int]:
             continue
     return out if out else list(default)
 
+def _env_str_list(name: str, default: List[str]) -> List[str]:
+    raw = os.getenv(name)
+    if not raw:
+        return list(default)
+    out = [p.strip() for p in raw.replace(';', ',').split(',') if p.strip()]
+    return out if out else list(default)
 
 
 class Settings(BaseModel):
@@ -115,12 +120,36 @@ class Settings(BaseModel):
     distribution_bin_count: int = Field(default_factory=lambda: _env_int("DIST_BIN_COUNT", 60))
     distribution_block_max: int = Field(default_factory=lambda: _env_int("DIST_BLOCK_MAX", 288))
     block_fetch_max: int = Field(default_factory=lambda: _env_int("BLOCK_FETCH_MAX", 500))
+
+    # Fulcrum
     fulcrum_enabled: bool = Field(default_factory=lambda: _env_bool("FULCRUM_ENABLED", True))
     fulcrum_host: str = Field(default_factory=lambda: _env_str("FULCRUM_HOST", "127.0.0.1"))
     fulcrum_port: int = Field(default_factory=lambda: _env_int("FULCRUM_PORT", 50002))
     fulcrum_ssl: bool = Field(default_factory=lambda: _env_bool("FULCRUM_SSL", True))
     fulcrum_ssl_verify: bool = Field(default_factory=lambda: _env_bool("FULCRUM_SSL_VERIFY", False))
     fulcrum_request_timeout: float = Field(default_factory=lambda: _env_float("FULCRUM_TIMEOUT", 30.0))
+
+    # --- NEW: External prices poller (optional) ---
+    # Toggle the background poller on/off
+    external_prices_enabled: bool = Field(
+        default_factory=lambda: _env_bool(["EXT_PRICE_ENABLED", "EXTERNAL_PRICES_ENABLED"], False)
+    )
+    # SQLite path for persisted prices
+    external_prices_db_path: str = Field(
+        default_factory=lambda: _env_str(["EXT_PRICE_DB", "EXTERNAL_PRICES_DB_PATH"], "external_prices.sqlite")
+    )
+    # Polling cadence in seconds
+    external_prices_poll_sec: float = Field(
+        default_factory=lambda: _env_float(["EXT_PRICE_POLL_SEC", "EXTERNAL_PRICES_POLL_SEC"], 30.0)
+    )
+    # HTTP timeout for each source call
+    external_prices_http_timeout: float = Field(
+        default_factory=lambda: _env_float(["EXT_PRICE_HTTP_TIMEOUT", "EXTERNAL_PRICES_HTTP_TIMEOUT"], 8.0)
+    )
+    # Which sources to poll (comma/semicolon list)
+    external_prices_sources: List[str] = Field(
+        default_factory=lambda: _env_str_list("EXTERNAL_PRICE_SOURCES", ["coindesk", "binance", "kraken", "coinbase"])
+    )
 
     class Config:
         arbitrary_types_allowed = True
@@ -133,5 +162,3 @@ SETTINGS = Settings()
 if SETTINGS.sigma_usd < 1.0:
     # Treat tiny values as misconfigured and bump to default
     SETTINGS.sigma_usd = 75.0
-
-
