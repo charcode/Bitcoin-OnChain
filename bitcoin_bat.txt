@@ -1,0 +1,18 @@
+ubuntu: 
+cd /mnt/f/bitcoin/datum_gateway/build
+./datum_gateway -c config.json
+
+powershell: 
+f: 
+cd F:\bitcoin\Fulcrum-1.12.0-win64
+.\Fulcrum.exe .\fulcrum.conf
+
+
+anaconda: 
+cd D:\charbel\Documents\AiiQ\github\bitcoin_on_chain\backend
+conda activate btc-onchain
+uvicorn btc_onchain.main:app --reload --host 0.0.0.0 --port 8000
+
+powershell 
+cd D:\charbel\Documents\AiiQ\github\bitcoin_on_chain\frontend 
+npm run dev   

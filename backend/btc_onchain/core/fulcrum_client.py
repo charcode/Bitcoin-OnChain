@@ -1,58 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import ssl
-import struct
-from dataclasses import dataclass
-from typing import List, Optional
+import time
+from typing import Any, Dict, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
 
 
-def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
-    prefix = data[offset]
-    offset += 1
-    if prefix < 0xFD:
-        return prefix, offset
-    if prefix == 0xFD:
-        value = struct.unpack_from("<H", data, offset)[0]
-        offset += 2
-        return value, offset
-    if prefix == 0xFE:
-        value = struct.unpack_from("<I", data, offset)[0]
-        offset += 4
-        return value, offset
-    value = struct.unpack_from("<Q", data, offset)[0]
-    offset += 8
-    return value, offset
-
-
-def _encode_varint(value: int) -> bytes:
-    if value < 0xFD:
-        return struct.pack("<B", value)
-    if value <= 0xFFFF:
-        return b"\xfd" + struct.pack("<H", value)
-    if value <= 0xFFFFFFFF:
-        return b"\xfe" + struct.pack("<I", value)
-    return b"\xff" + struct.pack("<Q", value)
-
-
-def _double_sha256(payload: bytes) -> bytes:
-    return hashlib.sha256(hashlib.sha256(payload).digest()).digest()
-
-
-@dataclass
-class ParsedTransaction:
-    txid: str
-    vin: List[dict]
-    vout: List[dict]
-
-
 class FulcrumClient:
-    '''Minimal Electrum/Fulcrum JSON-RPC client for block retrieval.'''
+    """
+    Minimal persistent Electrum/Fulcrum JSON-RPC client with:
+      - One TCP connection kept open.
+      - Background reader that demuxes responses to awaiting Futures.
+      - Large read buffer (handles very large JSON frames).
+      - Graceful handling of SSL 'close-notify'.
+      - Simple per-height tx cache and bounded concurrency.
+    """
 
     def __init__(
         self,
@@ -61,184 +27,339 @@ class FulcrumClient:
         use_ssl: bool = True,
         verify_ssl: bool = False,
         request_timeout: float = 30.0,
+        max_line_bytes: int = 16 * 1024 * 1024,  # 16 MiB safety for big JSON
     ) -> None:
+        # Config
         self._host = host
-        self._port = port
-        self._use_ssl = use_ssl
-        self._request_timeout = request_timeout
-        self._id = 0
-        self._ssl_context: Optional[ssl.SSLContext]
-        if use_ssl:
+        self._port = int(port)
+        self._use_ssl = bool(use_ssl)
+        self._request_timeout = float(request_timeout)
+        self._max_line = int(max_line_bytes)
+
+        # SSL context (optional verification)
+        self._ssl_context: Optional[ssl.SSLContext] = None
+        if self._use_ssl:
             ctx = ssl.create_default_context()
             if not verify_ssl:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
             self._ssl_context = ctx
-        else:
-            self._ssl_context = None
+
+        # IO state
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
+        self._read_task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()  # serializes writes & (re)connects
+        self._closed = False
+
+        # JSON-RPC plumbing
+        self._next_id = 0
+        self._pending: Dict[int, asyncio.Future] = {}
+
+        # Capabilities / diagnostics
+        self._caps_checked = False
+        self._server_version: Optional[str] = None
+        self._last_negotiate_error: Optional[str] = None
+
+        # Per-height cache for get_block_transactions()
+        self._tx_cache: Dict[int, Tuple[List[dict], float]] = {}
+        self._cache_ttl = 180.0  # seconds
+
+        # Concurrency guards
+        self._tx_sem = asyncio.Semaphore(20)
+        self._idfrompos_sem = asyncio.Semaphore(80)
+
+    # ---------- public lifecycle ----------
 
     async def aclose(self) -> None:
-        # Stateless client; nothing to close.
-        return None
+        """Close connection and stop reader task."""
+        self._closed = True
+        # Cancel reader task
+        try:
+            if self._read_task and not self._read_task.done():
+                self._read_task.cancel()
+                with contextlib.suppress(Exception):
+                    await self._read_task
+        except Exception:
+            pass
+        # Close streams
+        await self._shutdown_streams()
+        # Fail any pending futures
+        for fid, fut in list(self._pending.items()):
+            if not fut.done():
+                fut.set_exception(ConnectionError("fulcrum client closed"))
+        self._pending.clear()
 
-    async def _request(self, method: str, params: Optional[list] = None) -> object:
-        self._id += 1
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self._id,
-            "method": method,
-            "params": params or [],
-        }
-        message = json.dumps(payload) + "\n"
+    # ---------- connection & reader ----------
 
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(
+    async def _ensure_connected(self) -> None:
+        if self._reader and not self._reader.at_eof() and self._writer:
+            return
+        await self._connect()
+
+    async def _connect(self) -> None:
+        async with self._lock:
+            if self._reader and not self._reader.at_eof() and self._writer:
+                return
+            await self._shutdown_streams()
+            logger.info(f"FulcrumClient: connecting to {self._host}:{self._port} (ssl={self._use_ssl})")
+            reader, writer = await asyncio.open_connection(
                 host=self._host,
                 port=self._port,
                 ssl=self._ssl_context,
-            ),
-            timeout=self._request_timeout,
-        )
-        try:
-            writer.write(message.encode())
-            await writer.drain()
-            line = await asyncio.wait_for(reader.readline(), timeout=self._request_timeout)
-        finally:
-            writer.close()
+                # Big per-line limit to avoid LimitOverrunError on large JSON
+                limit=self._max_line,
+            )
+            self._reader, self._writer = reader, writer
+            # Start background reader
+            self._read_task = asyncio.create_task(self._read_loop(), name="fulcrum-read-loop")
+            # Reset negotiation on new connection
+            self._caps_checked = False
+            self._server_version = None
+            self._last_negotiate_error = None
+
+    async def _shutdown_streams(self) -> None:
+        rd, wr = self._reader, self._writer
+        self._reader = None
+        self._writer = None
+        if wr is not None:
             try:
-                await writer.wait_closed()
+                wr.close()
+                try:
+                    await wr.wait_closed()
+                except ssl.SSLError:
+                    # Quiet close-notify noise
+                    pass
+                except Exception:
+                    pass
             except Exception:
                 pass
 
-        if not line:
-            raise ConnectionError("Fulcrum returned no data")
+    async def _read_loop(self) -> None:
+        """
+        Reads '\n'-delimited JSON-RPC responses and dispatches them to pending Futures.
+        Reconnects automatically on errors (unless explicitly closed).
+        """
+        try:
+            assert self._reader is not None
+            reader = self._reader
+            while not self._closed:
+                # Using explicit readuntil; limit was raised in open_connection.
+                line = await reader.readuntil(b"\n")
+                if not line:
+                    # Peer closed
+                    raise ConnectionError("fulcrum: peer closed")
+                try:
+                    obj = json.loads(line.decode("utf-8", errors="replace"))
+                except Exception as e:
+                    logger.warning(f"FulcrumClient: JSON decode error: {e!r}")
+                    continue
 
-        response = json.loads(line.decode())
-        if response.get("error"):
-            raise RuntimeError(response["error"])
-        return response.get("result")
+                # Electrum server may send list (batch) or dict
+                if isinstance(obj, list):
+                    for entry in obj:
+                        await self._dispatch(entry)
+                else:
+                    await self._dispatch(obj)
 
-    async def get_block_hex(self, height: int) -> str:
-        result = await self._request("blockchain.block.get_block", [height])
-        if isinstance(result, dict):
-            raw_hex = result.get("hex") or result.get("block")
+        except (asyncio.CancelledError, GeneratorExit):
+            # Normal shutdown path
+            pass
+        except (asyncio.LimitOverrunError, ValueError) as e:
+            # Framing exceeded limit or malformed line; reconnect.
+            logger.error(f"FulcrumClient: read loop framing error: {e!r}; reconnecting")
+        except Exception as e:
+            # Connection / SSL errors, etc.
+            logger.warning(f"FulcrumClient: read loop error: {e!r}; reconnecting")
+        finally:
+            # Fail all pending futures on disconnect
+            for fid, fut in list(self._pending.items()):
+                if not fut.done():
+                    fut.set_exception(ConnectionError("fulcrum connection lost"))
+            self._pending.clear()
+            # Close streams
+            await self._shutdown_streams()
+            # Auto-reconnect if not explicitly closed
+            if not self._closed:
+                try:
+                    await asyncio.sleep(0.5)
+                    await self._connect()
+                except Exception as e:
+                    logger.error(f"FulcrumClient: reconnect failed: {e!r}")
+
+    async def _dispatch(self, obj: Any) -> None:
+        """
+        Dispatch a JSON-RPC response object to its awaiting Future.
+        Accepts shapes: { "id": ..., "result": ... } or { "id": ..., "error": ... }.
+        """
+        if not isinstance(obj, dict) or "id" not in obj:
+            return
+        fid = obj.get("id")
+        fut = self._pending.pop(fid, None)
+        if fut is None:
+            return
+        if "error" in obj and obj["error"]:
+            err = obj["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            if not fut.done():
+                fut.set_exception(RuntimeError(msg))
         else:
-            raw_hex = result
-        if not isinstance(raw_hex, str):
-            raise RuntimeError(f"Unexpected block payload from Fulcrum: {type(result)!r}")
-        return raw_hex
+            if not fut.done():
+                fut.set_result(obj.get("result"))
+
+    # ---------- JSON-RPC helpers ----------
+
+    async def _rpc(self, method: str, params: Optional[list] = None, timeout: Optional[float] = None) -> Any:
+        """
+        Send a single JSON-RPC request and await result.
+        """
+        await self._ensure_connected()
+
+        # Create future and send line atomically under lock
+        async with self._lock:
+            self._next_id += 1
+            rid = self._next_id
+            fut: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._pending[rid] = fut
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "method": method,
+                "params": params or [],
+            }
+            line = (json.dumps(payload) + "\n").encode("utf-8")
+            assert self._writer is not None
+            self._writer.write(line)
+            await self._writer.drain()
+
+        # Wait for result
+        try:
+            return await asyncio.wait_for(fut, timeout or self._request_timeout)
+        except Exception:
+            # Clean pending on error
+            self._pending.pop(rid, None)
+            raise
+
+    async def _negotiate(self) -> None:
+        """
+        Probe server capabilities / version once per connection.
+        """
+        if self._caps_checked:
+            return
+        try:
+            v = await self._rpc("server.version", ["btc-onchain", "1.4"], timeout=10)
+            # v can be "Fulcrum 1.9.x" OR ["Fulcrum 1.9.x","1.5"]
+            if isinstance(v, (list, tuple)) and v:
+                self._server_version = str(v[0])
+            else:
+                self._server_version = str(v)
+            self._last_negotiate_error = None
+        except Exception as e:
+            self._server_version = None
+            self._last_negotiate_error = str(e)
+        finally:
+            self._caps_checked = True
+
+    # ---------- Electrum methods used by the app ----------
+
+    async def _block_header(self, height: int) -> Optional[str]:
+        try:
+            hdr = await self._rpc("blockchain.block.header", [height], timeout=15)
+            return str(hdr) if hdr is not None else None
+        except Exception:
+            return None
+
+    async def _id_from_pos(self, height: int, tx_pos: int) -> Optional[str]:
+        """
+        Ask for txid at (height, tx_pos). Returns None if out of range.
+        """
+        try:
+            async with self._idfrompos_sem:
+                res = await self._rpc("blockchain.transaction.id_from_pos", [height, tx_pos, False], timeout=15)
+            return str(res) if res else None
+        except Exception:
+            return None
+
+    async def _tx_get(self, txid: str, verbose: bool = True) -> Optional[dict]:
+        """
+        Get verbose transaction dict (Core-like shape with vout list).
+        """
+        try:
+            async with self._tx_sem:
+                res = await self._rpc("blockchain.transaction.get", [txid, verbose], timeout=self._request_timeout)
+            return res if isinstance(res, dict) else None
+        except Exception:
+            return None
+
+    # ---------- High-level helper for routes ----------
 
     async def get_block_transactions(self, height: int) -> List[dict]:
-        raw_hex = await self.get_block_hex(height)
-        return [tx.__dict__ for tx in _parse_block(raw_hex)]
+        """
+        Returns a list of verbose tx dicts for a given block height.
+        Uses id_from_pos to discover count, then fetches txs with moderate parallelism.
+        """
+        now = time.time()
+        cached = self._tx_cache.get(height)
+        if cached and (now - cached[1]) <= self._cache_ttl:
+            return cached[0]
 
+        await self._negotiate()
 
-def _parse_block(raw_hex: str) -> List[ParsedTransaction]:
-    data = bytes.fromhex(raw_hex)
-    offset = 0
-    if len(data) < 81:
-        raise ValueError("Block data too short")
-    offset += 80  # skip header
-    tx_count, offset = _read_varint(data, offset)
+        # Ensure block exists
+        hdr = await self._block_header(height)
+        if hdr is None:
+            raise RuntimeError(f"Fulcrum: cannot read block header at height {height}")
 
-    transactions: List[ParsedTransaction] = []
-    for _ in range(tx_count):
-        txid_serial = bytearray()
-        vin_entries: List[dict] = []
-        vout_entries: List[dict] = []
+        # Exponential probe to find an upper bound for tx count
+        step = 64
+        hi = 0
+        while True:
+            res = await self._id_from_pos(height, hi)
+            if res is None:
+                break
+            hi += step
+            if hi > 500_000:  # hard safety bound
+                break
 
-        version = struct.unpack_from("<I", data, offset)[0]
-        txid_serial += struct.pack("<I", version)
-        offset += 4
-
-        has_witness = False
-        if data[offset:offset + 2] == b"\x00\x01":
-            has_witness = True
-            offset += 2
-
-        vin_count, offset = _read_varint(data, offset)
-        txid_serial += _encode_varint(vin_count)
-
-        for _ in range(vin_count):
-            prev_hash = data[offset:offset + 32]
-            offset += 32
-            prev_index_bytes = data[offset:offset + 4]
-            offset += 4
-            script_len, offset = _read_varint(data, offset)
-            script_sig = data[offset:offset + script_len]
-            offset += script_len
-            sequence = data[offset:offset + 4]
-            offset += 4
-
-            txid_serial += prev_hash
-            txid_serial += prev_index_bytes
-            txid_serial += _encode_varint(script_len)
-            txid_serial += script_sig
-            txid_serial += sequence
-
-            prev_index = struct.unpack("<I", prev_index_bytes)[0]
-            is_coinbase = prev_hash == b"\x00" * 32 and prev_index == 0xFFFFFFFF
-            if is_coinbase:
-                vin_entry = {
-                    "coinbase": script_sig.hex(),
-                    "txinwitness": [],
-                }
+        # Binary search exact n_tx in [0, hi)
+        lo, up = 0, hi
+        while lo < up:
+            mid = (lo + up) // 2
+            res = await self._id_from_pos(height, mid)
+            if res is None:
+                up = mid
             else:
-                vin_entry = {
-                    "txid": prev_hash[::-1].hex(),
-                    "vout": prev_index,
-                    "txinwitness": [],
-                }
-            vin_entries.append(vin_entry)
+                lo = mid + 1
+        n_tx = lo
+        if n_tx <= 0:
+            txs: List[dict] = []
+            self._tx_cache[height] = (txs, now)
+            return txs
 
-        vout_count, offset = _read_varint(data, offset)
-        txid_serial += _encode_varint(vout_count)
+        # Gather txids
+        async def get_txid(i: int) -> Optional[str]:
+            return await self._id_from_pos(height, i)
 
-        for _ in range(vout_count):
-            value_sats = struct.unpack_from("<Q", data, offset)[0]
-            offset += 8
-            script_len, offset = _read_varint(data, offset)
-            script_pubkey = data[offset:offset + script_len]
-            offset += script_len
+        txid_tasks = [asyncio.create_task(get_txid(i)) for i in range(n_tx)]
+        txids_all = await asyncio.gather(*txid_tasks, return_exceptions=False)
+        txids: List[str] = [t for t in txids_all if isinstance(t, str)]
 
-            txid_serial += struct.pack("<Q", value_sats)
-            txid_serial += _encode_varint(script_len)
-            txid_serial += script_pubkey
+        # Fetch verbose tx dicts
+        async def get_verbose(txid: str) -> Optional[dict]:
+            return await self._tx_get(txid, verbose=True)
 
-            script_type = "nulldata" if script_pubkey.startswith(b"\x6a") else "standard"
-            vout_entries.append(
-                {
-                    "value": value_sats / 1e8,
-                    "scriptPubKey": {"type": script_type},
-                }
-            )
+        tx_tasks = [asyncio.create_task(get_verbose(t)) for t in txids]
+        txs_all = await asyncio.gather(*tx_tasks, return_exceptions=False)
+        txs: List[dict] = [t for t in txs_all if isinstance(t, dict)]
 
-        if has_witness:
-            for vin_entry in vin_entries:
-                stack_count, offset = _read_varint(data, offset)
-                witness_items: List[str] = []
-                for _ in range(stack_count):
-                    item_len, offset = _read_varint(data, offset)
-                    witness = data[offset:offset + item_len]
-                    offset += item_len
-                    witness_items.append(witness.hex())
-                vin_entry["txinwitness"] = witness_items
-        else:
-            for vin_entry in vin_entries:
-                vin_entry.setdefault("txinwitness", [])
+        # Cache (bounded)
+        self._tx_cache[height] = (txs, now)
+        if len(self._tx_cache) > 64:
+            oldest = min(self._tx_cache.keys(), key=lambda k: self._tx_cache[k][1])
+            self._tx_cache.pop(oldest, None)
+        return txs
 
-        locktime = data[offset:offset + 4]
-        offset += 4
-        txid_serial += locktime
 
-        txid = _double_sha256(bytes(txid_serial))[::-1].hex()
-
-        transactions.append(
-            ParsedTransaction(
-                txid=txid,
-                vin=vin_entries,
-                vout=vout_entries,
-            )
-        )
-
-    return transactions
+# Small stdlib import used in aclose(); kept at bottom to avoid cluttering top.
+import contextlib  # noqa: E402

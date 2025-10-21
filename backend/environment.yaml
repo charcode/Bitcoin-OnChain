@@ -11,7 +11,9 @@ dependencies:
   - httpx
   - pydantic
   - python-dotenv
-
+  - aiosqlite>=0.19
+  - aiohttp>=3.9
+  - sqlite  # ensures CLI/sqlite libs are present
   # Dev / optional
   - pip
   - pip:

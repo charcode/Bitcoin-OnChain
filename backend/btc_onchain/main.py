@@ -8,20 +8,20 @@ from .rpc import Rpc
 from .core.fulcrum_client import FulcrumClient
 from .core.app_state import AppState
 from .api.routes import router as api_router
+from .api.routes_prices import router as prices_router           # <-- NEW
+from .core.external_prices import ExternalPricePoller            # <-- NEW
 
 app = FastAPI(title="btc-onchain RNR Nowcaster", version="0.3.0")
 
-# CORS for Vite dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 _TASKS: list[asyncio.Task] = []
-
 
 @app.on_event("startup")
 async def _startup():
@@ -36,14 +36,28 @@ async def _startup():
             request_timeout=SETTINGS.fulcrum_request_timeout,
         )
     app.state.app_state = AppState(rpc=rpc, fulcrum=fulcrum)
-    # spawn workers
+
+    # External prices poller
+    app.state.app_state.ext_prices = None
+    if SETTINGS.external_prices_enabled:
+        sources = [s.strip() for s in SETTINGS.external_prices_sources_csv.split(",") if s.strip()]
+        poller = ExternalPricePoller(
+            db_path=SETTINGS.external_prices_db_path,
+            interval_s=SETTINGS.external_prices_interval,
+            sources=sources,
+        )
+        app.state.app_state.ext_prices = poller
+        await poller.start()
+
+    # spawn workers you already have
     _TASKS[:] = [
         asyncio.create_task(app.state.app_state.refresh_loop(), name="mempool-refresh"),
         asyncio.create_task(app.state.app_state.rnr_loop(), name="rnr-loop"),
         asyncio.create_task(app.state.app_state.stencil_loop(), name="stencil-loop"),
     ]
-    app.include_router(api_router)
 
+    app.include_router(api_router)
+    app.include_router(prices_router)  # <-- NEW
 
 @app.on_event("shutdown")
 async def _shutdown():
@@ -58,5 +72,11 @@ async def _shutdown():
     if st.fulcrum is not None:
         try:
             await st.fulcrum.aclose()
+        except Exception:
+            pass
+    # stop poller
+    if getattr(st, "ext_prices", None) is not None:
+        try:
+            await st.ext_prices.stop()
         except Exception:
             pass

@@ -1,8 +1,11 @@
 from __future__ import annotations
 import time
 import math
+import asyncio
+import logging
 from typing import Literal
 from fastapi import APIRouter, Query, Request, HTTPException
+from fastapi.responses import StreamingResponse
 
 from ..models import (
     PriceEstimate,
@@ -23,6 +26,7 @@ from ..config import SETTINGS
 from ..core.stencil_price import compute_stencil_price
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 def _state(request: Request):
@@ -64,7 +68,7 @@ def _resolve_block_range(state, start: int, end: int | None):
         if count > SETTINGS.block_fetch_max:
             raise HTTPException(
                 status_code=400,
-                detail=f"Requested range too large (>\{SETTINGS.block_fetch_max} blocks)",
+                detail=f"Requested range too large (>{SETTINGS.block_fetch_max} blocks)",  # fixed stray backslash
             )
 
         return start_h, end_h, tip_height, count
@@ -215,7 +219,6 @@ async def debug_distribution(
     return _to_resp(snapshot, "blocks")
 
 
-
 @router.get("/debug/blocks", response_model=BlocksRangeResp)
 async def debug_blocks(
     request: Request,
@@ -259,18 +262,12 @@ async def debug_blocks(
 async def debug_stencil_price(
     request: Request,
     start: int = Query(-144, description="Starting block height or negative offset from tip (inclusive)"),
-    end: int | None = Query(
-        None,
-        description=(
-            "Ending block height or negative offset from tip (inclusive). "
-            "Defaults to the chain tip when start is negative, otherwise matches start."
-        ),
-    ),
+    end: int | None = Query(None, description="Ending block height or negative offset from tip (inclusive)."),
 ):
     st = _state(request)
     start_height, end_height, tip_height, count = await _resolve_block_range(st, start, end)
 
-    # Serve cached result for the common case "last N blocks"
+    # Serve cached result for "last N blocks"
     if (
         st.stencil_cache is not None
         and st.stencil_cache_start == start_height
@@ -285,10 +282,19 @@ async def debug_stencil_price(
             **cached,
         )
 
+    # ---- NEW: robust error reporting so clients see the root cause instead of 500 ----
     try:
         result = await compute_stencil_price(st.rpc, st.fulcrum, start_height, end_height)
     except ValueError as exc:
+        # bad user input or range -> 400
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        # upstream slow -> 504 with hint
+        raise HTTPException(status_code=504, detail=f"stencil timed out: {exc}") from exc
+    except Exception as exc:
+        # unexpected -> 502 with readable message (instead of 500)
+        raise HTTPException(status_code=502, detail=f"stencil failed: {type(exc).__name__}: {exc}") from exc
+    # -------------------------------------------------------------------------------
 
     resp = StencilPriceResp(
         start_height=start_height,
@@ -297,7 +303,7 @@ async def debug_stencil_price(
         tip_height=tip_height,
         **result,
     )
-    # Update cache for "last N blocks"
+    # cache
     try:
         st.stencil_cache = {
             "start_height": start_height,
@@ -313,6 +319,7 @@ async def debug_stencil_price(
         pass
 
     return resp
+
 
 
 @router.get("/debug/heatmap", response_model=HeatmapResp)
@@ -349,5 +356,148 @@ async def debug_heatmap(
     )
 
 
+@router.get("/debug/mempool_csv")
+async def mempool_csv(request: Request, include_inputs: bool = False, limit: int = 50000):
+    st = _state(request)
+    st.mempool.prune()
 
+    async def inputs_for_tx(tx):
+        # Only if include_inputs=True: fetch prevout addresses (expensive!)
+        addrs = []
+        for vin in (tx.get("vin") or []):
+            prev_id = vin.get("txid"); prev_n = vin.get("vout")
+            if not prev_id or prev_n is None:
+                continue
+            try:
+                prev = await st.rpc.call("getrawtransaction", [prev_id, True])
+                spk = ((prev.get("vout") or [])[prev_n] or {}).get("scriptPubKey", {})
+                addr = spk.get("address") or (spk.get("addresses") or [None])[0]
+                if addr: addrs.append(addr)
+            except Exception:
+                continue
+        return addrs
+
+    async def row_iter():
+        yield "ts,txid,vout_n,value_btc,value_sats,address_out,inputs\n"
+        count = 0
+        # iterate newest-first
+        for out in reversed(st.mempool.outputs):
+            if count >= max(1, int(limit)):
+                break
+            txid = getattr(out, "txid", None) or ""
+            vout_n = getattr(out, "vout_n", None)
+            addr_out = getattr(out, "address_out", None) or ""
+            sats = int(round(out.value_btc * 100_000_000))
+            inputs_col = ""
+            if include_inputs and txid:
+                try:
+                    tx = await st.rpc.call("getrawtransaction", [txid, True])
+                    ins = await inputs_for_tx(tx)
+                    inputs_col = ";".join(ins)
+                except Exception:
+                    pass
+            line = f"{int(out.ts)},{txid},{'' if vout_n is None else vout_n},{out.value_btc},{sats},{addr_out},{inputs_col}\n"
+            yield line
+            count += 1
+
+    headers = {"Content-Disposition": 'attachment; filename="mempool_dump.csv"'}
+    return StreamingResponse(row_iter(), media_type="text/csv", headers=headers)
+
+
+# Fulcrum-backed CSV for historic blocks, with per-height timeout + bounded parallelism
+@router.get("/debug/blocks_csv")
+async def blocks_csv(
+    request: Request,
+    start: int = Query(-288, description="Start block height or negative offset from tip (inclusive)"),
+    end: int | None = Query(
+        None,
+        description="End block height or negative offset from tip (inclusive). Defaults to tip when start<0.",
+    ),
+    timeout_s: int = Query(25, ge=5, le=120, description="Per-height Fulcrum timeout (seconds)"),
+    max_parallel: int = Query(4, ge=1, le=16, description="Max concurrent Fulcrum block fetches"),
+):
+    """
+    Stream CSV of outputs for blocks in [start, end], using Fulcrum for tx retrieval.
+    Columns: block_height,block_time,txid,vout_n,value_btc,value_sats,address_out
+    """
+    st = _state(request)
+    if st.fulcrum is None:
+        raise HTTPException(status_code=503, detail="Fulcrum is not enabled/available")
+
+    start_h, end_h, tip_height, count = await _resolve_block_range(st, start, end)
+
+    # Create/update semaphore for this request’s desired parallelism (one shared per app state)
+    if getattr(st, "fulcrum_sem", None) is None or getattr(st, "fulcrum_sem_max", None) != int(max_parallel):
+        st.fulcrum_sem = asyncio.Semaphore(int(max_parallel))
+        st.fulcrum_sem_max = int(max_parallel)
+
+    async def fetch_block_txs(height: int):
+        async with st.fulcrum_sem:
+            t0 = time.time()
+            try:
+                txs = await asyncio.wait_for(st.fulcrum.get_block_transactions(height), timeout=timeout_s)
+                dt_ms = (time.time() - t0) * 1000.0
+                log.info(f"/debug/blocks_csv height={height} fulcrum_ms={dt_ms:.0f} txs={len(txs) if isinstance(txs, list) else 'n/a'}")
+                return txs, None
+            except asyncio.TimeoutError:
+                return None, f"timeout after {timeout_s}s"
+            except Exception as exc:
+                return None, str(exc)
+
+    async def row_iter():
+        yield "block_height,block_time,txid,vout_n,value_btc,value_sats,address_out\n"
+        for height in range(start_h, end_h + 1):
+            # Cheap Core metadata
+            try:
+                block_hash = await st.rpc.call("getblockhash", [height])
+                blk = await st.rpc.call("getblock", [block_hash, 1])
+                btime = int(blk.get("time", 0)) if isinstance(blk, dict) else 0
+            except Exception as exc:
+                log.warning(f"/debug/blocks_csv height={height} core_error={exc}")
+                yield f"{height},0,,,,,\n"
+                continue
+
+            txs, err = await fetch_block_txs(height)
+            if err is not None:
+                log.warning(f"/debug/blocks_csv height={height} fulcrum_error={err}")
+                # Marker row so clients know we advanced but skipped txs for this height
+                yield f"{height},{btime},,,,,\n"
+                continue
+
+            for tx in (txs or []):
+                txid = str(tx.get("txid", "")) if isinstance(tx, dict) else ""
+                vouts = tx.get("vout", []) if isinstance(tx, dict) else []
+                for i, vout in enumerate(vouts or []):
+                    if not isinstance(vout, dict):
+                        continue
+                    val = vout.get("value")
+                    if not isinstance(val, (int, float)) or val <= 0:
+                        continue
+                    sats = int(round(float(val) * 100_000_000))
+                    spk = vout.get("scriptPubKey", {}) if isinstance(vout, dict) else {}
+                    addr = spk.get("address") or (spk.get("addresses") or [None])[0] or ""
+                    yield f"{height},{btime},{txid},{i},{float(val)},{sats},{addr}\n"
+
+    headers = {"Content-Disposition": 'attachment; filename="blocks_dump.csv"'}
+    return StreamingResponse(row_iter(), media_type="text/csv", headers=headers)
+
+@router.get("/debug/fulcrum_info")
+async def fulcrum_info(request: Request):
+    st = _state(request)
+    f = getattr(st, "fulcrum", None)
+    if f is None:
+        return {"enabled": False}
+    try:
+        # add a method server_version() on FulcrumClient if you don't have it
+        ver = await f.server_version()
+    except Exception:
+        ver = None
+    return {
+        "enabled": True,
+        "host": getattr(f, "_host", None),
+        "port": getattr(f, "_port", None),
+        "ssl": getattr(f, "_use_ssl", None),
+        "server_version": ver,
+        "request_timeout": getattr(f, "_request_timeout", None),
+    }
 
