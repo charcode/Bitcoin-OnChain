@@ -1,0 +1,8 @@
+aiosqlite>=0.19
+aiohttp>=3.9
+fastapi
+httpx
+numpy
+pydantic
+python-dotenv
+uvicorn[standard]

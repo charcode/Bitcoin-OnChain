@@ -1,28 +1,15 @@
-# ---------- Stage 1: build frontend ----------
-FROM node:20-alpine AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ .
-RUN npm run build
+FROM python:3.11-slim
 
-# ---------- Stage 2: backend ----------
-FROM python:3.11-slim AS backend
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install Python dependencies
+WORKDIR /app
+
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend code
-COPY backend/ .
+COPY backend/btc_onchain ./btc_onchain
 
-# Copy built frontend into static directory (adjust if needed)
-COPY --from=frontend-build /app/frontend/dist /app/static
-
-# Expose backend port (FastAPI/Flask)
 EXPOSE 8000
 
-# Command to run backend
-CMD ["python", "main.py"]
+CMD ["uvicorn", "btc_onchain.main:app", "--host", "0.0.0.0", "--port", "8000"]

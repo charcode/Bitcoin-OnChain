@@ -1,0 +1,86 @@
+services:
+  datum-gateway:
+    build:
+      context: .
+      dockerfile: docker/datum-gateway/Dockerfile
+    image: bitcoin-on-chain/datum-gateway:local
+    working_dir: /datum_gateway
+    command: ["./datum_gateway", "-c", "config.json"]
+    volumes:
+      - type: bind
+        source: ${DATUM_GATEWAY_BUILD:-F:/bitcoin/datum_gateway/build}
+        target: /datum_gateway
+    restart: unless-stopped
+    profiles: ["mining"]
+
+  fulcrum:
+    build:
+      context: .
+      dockerfile: docker/fulcrum/Dockerfile
+      args:
+        FULCRUM_VERSION: ${FULCRUM_VERSION:-1.12.0}
+    image: bitcoin-on-chain/fulcrum:${FULCRUM_VERSION:-1.12.0}
+    command: ["/etc/fulcrum/fulcrum.conf"]
+    volumes:
+      - type: bind
+        source: ${FULCRUM_CONF:-F:/bitcoin/Fulcrum-1.12.0-win64/fulcrum.conf}
+        target: /etc/fulcrum/fulcrum.conf
+        read_only: true
+      - type: bind
+        source: ${FULCRUM_DATA:-F:/bitcoin/fulcrum-data}
+        target: /data/fulcrum
+    ports:
+      - "${FULCRUM_TCP_PORT:-50001}:50001"
+      - "${FULCRUM_SSL_PORT:-50002}:50002"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: bitcoin-on-chain/backend:local
+    environment:
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://host.docker.internal:8332}
+      BTC_RPC_USER: ${BTC_RPC_USER:-bitcoin}
+      BTC_RPC_PASS: ${BTC_RPC_PASS:-password}
+      DECODE_PER_TICK: ${DECODE_PER_TICK:-50}
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-0.75}
+      LOOKBACK_SEC: ${LOOKBACK_SEC:-900}
+      MIN_SAMPLES: ${MIN_SAMPLES:-500}
+      PRICE_MIN: ${PRICE_MIN:-20000}
+      PRICE_MAX: ${PRICE_MAX:-120000}
+      PRICE_STEP: ${PRICE_STEP:-50}
+      SIGMA: ${SIGMA:-75}
+      EMA_ALPHA: ${EMA_ALPHA:-0.25}
+      FULCRUM_ENABLED: ${FULCRUM_ENABLED:-true}
+      FULCRUM_HOST: ${FULCRUM_HOST:-fulcrum}
+      FULCRUM_PORT: ${FULCRUM_PORT:-50002}
+      FULCRUM_SSL: ${FULCRUM_SSL:-true}
+      FULCRUM_SSL_VERIFY: ${FULCRUM_SSL_VERIFY:-false}
+      FULCRUM_TIMEOUT: ${FULCRUM_TIMEOUT:-30}
+      EXT_PRICE_ENABLED: ${EXT_PRICE_ENABLED:-false}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - fulcrum
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:8000}
+    image: bitcoin-on-chain/frontend:local
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    profiles: ["monitoring"]
