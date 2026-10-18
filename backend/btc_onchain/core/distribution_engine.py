@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import time
+import asyncio
 from dataclasses import dataclass, field
 import math
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -32,6 +33,7 @@ class DistributionSnapshot:
 class DistributionEngine:
     block_cache: Dict[Tuple[int, int, int, int, bool], DistributionSnapshot] = field(default_factory=dict)
     cache_ttl: float = 30.0
+    block_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @staticmethod
     def _normalize_params(bin_size_sats: int, bin_count: int) -> Tuple[int, int]:
@@ -133,66 +135,64 @@ class DistributionEngine:
         rpc: Rpc,
         *,
         block_lookback: int,
+        block_loader=None,
         bin_size_sats: int,
         bin_count: int,
         edges: List[int] | None = None,
     ) -> DistributionSnapshot:
-        bin_size, count = self._normalize_params(bin_size_sats, bin_count)
-        tip_height = int(await rpc.call("getblockcount"))
-        block_count = max(1, min(int(block_lookback), SETTINGS.distribution_block_max))
-        block_end = tip_height
-        block_start = max(0, tip_height - block_count + 1)
-        cache_key = (block_start, block_end, bin_size, count, False)
+        async with self.block_lock:
+            bin_size, count = self._normalize_params(bin_size_sats, bin_count)
+            tip_height = int(await rpc.call("getblockcount"))
+            block_count = max(1, min(int(block_lookback), SETTINGS.distribution_block_max))
+            block_end = tip_height
+            block_start = max(0, tip_height - block_count + 1)
+            end_hash = await rpc.call("getblockhash", [block_end])
+            cache_key = (block_start, block_end, end_hash, bin_size, count, tuple(edges or []))
 
-        snapshot = self.block_cache.get(cache_key)
-        now = time.time()
-        if snapshot and now - snapshot.ts <= self.cache_ttl:
+            snapshot = self.block_cache.get(cache_key)
+            now = time.time()
+            if snapshot:
+                return snapshot
+
+            samples: List[Tuple[int, float]] = []
+            for height in range(block_start, block_end + 1):
+                if block_loader is not None:
+                    block = await block_loader(height)
+                    samples.extend((int(round(value * SATS_PER_BTC)), 1.) for value in block['values'])
+                else:
+                    block_hash = await rpc.call('getblockhash', [height])
+                    block = await rpc.call('getblock', [block_hash, 2])
+                    samples.extend((int(round(float(out['value']) * SATS_PER_BTC)), 1.)
+                                   for tx in block['tx'] for out in tx.get('vout', [])
+                                   if isinstance(out.get('value'), (int, float)) and out['value'] > 0)
+            if await rpc.call('getblockhash', [block_end]) != end_hash:
+                raise RuntimeError('Chain changed during distribution calculation; retry')
+
+            if edges and len(edges) >= 2:
+                bins, weights, total, overflow = self._compute_distribution_edges(samples, edges)
+            else:
+                bins, weights, total, overflow = self._compute_distribution(samples, bin_size, count)
+                edges = [i * bin_size for i in range(count + 1)]
+            snapshot = DistributionSnapshot(
+                ts=now,
+                bins=bins,
+                weights=weights,
+                total_samples=total,
+                overflow=overflow,
+                bin_size=bin_size,
+                bin_count=count,
+                weighted=False,
+                edges=edges,
+                block_start=block_start,
+                block_end=block_end,
+                block_count=block_end - block_start + 1,
+            )
+            self.block_cache[cache_key] = snapshot
+            # Trim cache if it grows large
+            if len(self.block_cache) > 16:
+                # Remove oldest entry
+                oldest_key = min(self.block_cache, key=lambda k: self.block_cache[k].ts)
+                self.block_cache.pop(oldest_key, None)
             return snapshot
-
-        samples: List[Tuple[int, float]] = []
-        for height in range(block_start, block_end + 1):
-            block_hash = await rpc.call("getblockhash", [height])
-            try:
-                block = await rpc.call("getblock", [block_hash, 2])
-            except Exception as exc:  # pragma: no cover - I/O path
-                # On large responses some nodes close early; propagate for caller to decide.
-                raise RuntimeError(f"getblock failed at height {height}: {exc}") from exc
-
-            txs = block.get("tx", []) if isinstance(block, dict) else []
-            for tx in txs:
-                vouts = tx.get("vout", []) if isinstance(tx, dict) else []
-                for vout in vouts:
-                    val = vout.get("value") if isinstance(vout, dict) else None
-                    if isinstance(val, (int, float)):
-                        sats = int(round(float(val) * SATS_PER_BTC))
-                        if sats > 0:
-                            samples.append((sats, 1.0))
-
-        if edges and len(edges) >= 2:
-            bins, weights, total, overflow = self._compute_distribution_edges(samples, edges)
-        else:
-            bins, weights, total, overflow = self._compute_distribution(samples, bin_size, count)
-            edges = [i * bin_size for i in range(count + 1)]
-        snapshot = DistributionSnapshot(
-            ts=now,
-            bins=bins,
-            weights=weights,
-            total_samples=total,
-            overflow=overflow,
-            bin_size=bin_size,
-            bin_count=count,
-            weighted=False,
-            edges=edges,
-            block_start=block_start,
-            block_end=block_end,
-            block_count=block_end - block_start + 1,
-        )
-        self.block_cache[cache_key] = snapshot
-        # Trim cache if it grows large
-        if len(self.block_cache) > 16:
-            # Remove oldest entry
-            oldest_key = min(self.block_cache, key=lambda k: self.block_cache[k].ts)
-            self.block_cache.pop(oldest_key, None)
-        return snapshot
 
 

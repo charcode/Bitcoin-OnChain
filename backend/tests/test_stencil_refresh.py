@@ -1,4 +1,7 @@
 import asyncio
+import tempfile
+import os
+from unittest.mock import patch
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +18,13 @@ FIXTURE = json.loads((Path(__file__).parent / 'fixtures/stencil_reference.json')
 
 
 class RefreshTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.env = patch.dict(os.environ, MODEL_CACHE_DB=os.path.join(self.temp.name, 'cache.sqlite'))
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
     async def test_compact_cached_estimator_matches_original_result(self):
         rpc = BlockRpc()
         for height, transactions in FIXTURE['blocks'].items():
@@ -78,14 +88,14 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         state.stencil_cache_end = 2
         state.stencil_cache_end_hash = 'one'
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(app_state=state)))
-        with patch('btc_onchain.api.routes.compute_stencil_price', new=AsyncMock()) as calculate:
-            result = await debug_stencil_price(request, start=1, end=2)
+        with patch('btc_onchain.core.stencil_price.compute_stencil_price', new=AsyncMock()) as calculate:
+            result = await debug_stencil_price(request, start=1, end=2, wait=True)
             self.assertEqual(result.samples_used, FIXTURE['expected']['1:2']['samples_used'])
             calculate.assert_not_awaited()
         rpc.call.side_effect = lambda method, params=None: 2 if method == 'getblockcount' else 'new'
-        with patch('btc_onchain.api.routes.compute_stencil_price',
+        with patch('btc_onchain.core.stencil_price.compute_stencil_price',
                    new=AsyncMock(return_value=FIXTURE['expected']['1:2'])) as calculate:
-            await debug_stencil_price(request, start=1, end=2)
+            await debug_stencil_price(request, start=1, end=2, wait=True)
             calculate.assert_awaited_once()
         self.assertEqual(state.stencil_cache_end_hash, 'new')
 

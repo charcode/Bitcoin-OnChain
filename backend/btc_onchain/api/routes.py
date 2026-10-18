@@ -130,11 +130,21 @@ async def node_status(request: Request):
     )
 
 
+@router.get("/debug/shared_cache")
+async def shared_cache_status(request: Request):
+    st = _state(request)
+    return {'producer': 'single-process', 'live_updated_at': st.rnr.last_run_ts,
+            'historical_computations': st.shared.computations, 'cache_hits': st.shared.hits,
+            'computing': st.shared.lock.locked(),
+            'persisted_entries': st.shared.db().execute('SELECT COUNT(*) FROM cache').fetchone()[0],
+            'history_points': len(st.rnr.estimate_history)}
+
+
 @router.get("/rnr/curve", response_model=CurveResp)
 async def rnr_curve(request: Request):
     st = _state(request)
     pts = [CurvePoint(p=float(p), s=float(s)) for p, s in st.rnr.last_curve]
-    return CurveResp(t=float(time.time()), points=pts)
+    return CurveResp(t=float(st.rnr.last_run_ts), points=pts)
 
 
 @router.get("/debug/candidates", response_model=CandidatesInfo)
@@ -213,28 +223,20 @@ async def debug_block_timeline(
     last_block_time = 0
 
     for height in range(start_height, tip_height + 1):
-        block_hash = await st.rpc.call("getblockhash", [height])
-        block = await st.rpc.call("getblock", [block_hash, 2])
-        block_time = int(block.get("time", 0)) if isinstance(block, dict) else 0
+        block = await st.block_outputs(height)
+        block_time = int(block['time'])
         if height == tip_height:
             last_block_time = block_time
-
         counts = [0 for _ in range(bin_count)]
         total_outputs = 0
-        txs = block.get("tx", []) if isinstance(block, dict) else []
-        for tx in txs:
-            vouts = tx.get("vout", []) if isinstance(tx, dict) else []
-            for vout in vouts:
-                value = vout.get("value") if isinstance(vout, dict) else None
-                if not isinstance(value, (int, float)) or value <= 0:
-                    continue
-                usd_value = float(value) * current_price
-                if usd_value < lo or usd_value > hi:
-                    continue
-                ratio = (math.log10(usd_value) - log_lo) / max(1e-9, (log_hi - log_lo))
-                idx = min(bin_count - 1, max(0, int(ratio * bin_count)))
-                counts[idx] += 1
-                total_outputs += 1
+        for value in block['values']:
+            usd_value = value * current_price
+            if usd_value < lo or usd_value > hi:
+                continue
+            ratio = (math.log10(usd_value) - log_lo) / max(1e-9, log_hi - log_lo)
+            idx = min(bin_count - 1, max(0, int(ratio * bin_count)))
+            counts[idx] += 1
+            total_outputs += 1
 
         block_peak = max(counts) if counts else 0
         max_count_seen = max(max_count_seen, block_peak)
@@ -269,16 +271,22 @@ async def debug_histogram(
     st = _state(request)
     used_price = float(st.rnr.ema_price or SETTINGS.price_min)
     half = SETTINGS.hist_sigma_frac * float(grid)
-    bins_list = st.rnr.hist_cache.get(grid)
+    key = (st.rnr.last_run_ts, grid, span)
+    if not hasattr(st, "histogram_views"):
+        st.histogram_views = {}
+    bins_list = st.histogram_views.get(key)
 
     # Compute on-demand if not yet cached
     if not bins_list:
         outs = st.mempool.get_recent_outputs()
         from ..rnr import rnr_histogram_usd
         bins_list = rnr_histogram_usd(outs, used_price, grid, span, half)
+        if len(st.histogram_views) >= 32:
+            st.histogram_views.clear()
+        st.histogram_views[key] = bins_list
 
     return HistogramResp(
-        t=float(time.time()),
+        t=float(st.rnr.last_run_ts),
         grid=int(grid),
         span=int(span),
         window=float(half),
@@ -368,6 +376,7 @@ async def debug_distribution(
         snapshot = await st.distributions.block_distribution(
             st.rpc,
             block_lookback=lookback,
+            block_loader=st.block_outputs,
             bin_size_sats=bin_size,
             bin_count=bins,
             edges=edges,
@@ -421,6 +430,7 @@ async def debug_stencil_price(
     request: Request,
     start: int = Query(-144, description="Starting block height or negative offset from tip (inclusive)"),
     end: int | None = Query(None, description="Ending block height or negative offset from tip (inclusive)."),
+    wait: bool = False,
 ):
     st = _state(request)
     start_height, end_height, tip_height, count = await _resolve_block_range(st, start, end)
@@ -439,9 +449,24 @@ async def debug_stencil_price(
             'block_count': count, 'tip_height': tip_height,
         })
 
+    if not wait:
+        key = f'stencil-v1:{start_height}:{end_height}:{end_hash}'
+        cached = st.shared.get(key)
+        if cached is not None:
+            return StencilPriceResp(**cached, start_height=start_height, end_height=end_height,
+                                    block_count=count, tip_height=tip_height)
+        async def warm():
+            try:
+                await st.shared_stencil(start_height, end_height, end_hash)
+            except Exception:
+                logger.warning('Shared stencil warm-up failed', exc_info=True)
+        asyncio.create_task(warm())
+        raise HTTPException(status_code=503, detail='Historical model is warming up on the server; retry shortly',
+                            headers={'Retry-After': '5'})
+
     # ---- NEW: robust error reporting so clients see the root cause instead of 500 ----
     try:
-        result = await compute_stencil_price(st.rpc, st.fulcrum, start_height, end_height, cache=st.stencil_blocks)
+        result = await st.shared_stencil(start_height, end_height, end_hash)
         if await st.rpc.call('getblockhash', [end_height]) != end_hash:
             raise RuntimeError('Chain changed during stencil request; retry')
     except ValueError as exc:

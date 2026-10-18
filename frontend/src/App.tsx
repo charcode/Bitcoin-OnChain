@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import EvaluationPanel from "./components/EvaluationPanel";
 import AdvancedControlsPanel from "./components/AdvancedControlsPanel";
@@ -10,7 +10,7 @@ import PrimaryResonanceChart from "./components/PrimaryResonanceChart";
 import QuickControls from "./components/QuickControls";
 import TopStatBar from "./components/TopStatBar";
 import type { StatItem } from "./components/TopStatBar";
-import { getCandidates, getHistogram, getNodeStatus, getPriceNow, getRnrCurve, getStencilPrice } from "./lib/api";
+import { getEstimateHistory, getCandidates, getHistogram, getNodeStatus, getPriceNow, getRnrCurve, getStencilPrice } from "./lib/api";
 import type { CandidatesInfo, CurveResp, HistogramResp, NodeStatus, PriceNow, StencilPriceResp } from "./lib/types";
 import { usePriceStore } from "./state/usePriceStore";
 
@@ -64,7 +64,6 @@ export default function App() {
 
   const livePrice = nowcast?.price != null && nowcast.price > 0 ? nowcast.price : null;
 
-  const historyRef = useRef<TimelinePoint[]>([]);
   const [timelineHistory, setTimelineHistory] = useState<TimelinePoint[]>([]);
 
   useEffect(() => {
@@ -80,7 +79,7 @@ export default function App() {
       if (inFlight) return;
       inFlight = true;
       try {
-        const [priceResp, candidatesResp, statusResp] = await Promise.all([getPriceNow(), getCandidates(), getNodeStatus()]);
+        const [priceResp, candidatesResp, statusResp, history] = await Promise.all([getPriceNow(), getCandidates(), getNodeStatus(), getEstimateHistory({ window_sec: 7200, limit: 600 })]);
         if (!active) return;
         setNowcast(priceResp);
         setNodeStatus(statusResp);
@@ -94,18 +93,11 @@ export default function App() {
         }
         setCandidates(candidatesResp);
 
-        const blend = nextLivePrice ?? 0;
+        setTimelineHistory(history.points.map(point => ({
+          t: point.t * 1000, live: point.ema_price, blend: point.ema_price,
+          confidence: point.confidence,
+        })));
 
-        if (nextLivePrice !== null || blend > 0) {
-          const next: TimelinePoint = {
-            t: Date.now(),
-            live: nextLivePrice ?? 0,
-            blend,
-            confidence: priceResp.confidence || 0,
-          };
-          historyRef.current = [...historyRef.current, next].slice(-240);
-          setTimelineHistory(historyRef.current);
-        }
       } finally {
         inFlight = false;
       }
@@ -117,14 +109,14 @@ export default function App() {
       active = false;
       window.clearInterval(id);
     };
-  }, [refreshToken, stencil]);
+  }, [refreshToken]);
 
   useEffect(() => {
     let active = true;
     const run = async () => {
       try {
         const response = await getRnrCurve();
-        if (active) setCurve(response);
+        if (active) setCurve(previous => previous?.t === response.t ? previous : response);
       } catch {
         if (active) setCurve(null);
       }
@@ -142,7 +134,7 @@ export default function App() {
     const run = async () => {
       try {
         const response = await getHistogram({ grid: histGrid, span: histSpan });
-        if (active) setHistogram(response);
+        if (active) setHistogram(previous => previous?.t === response.t && previous?.grid === response.grid && previous?.span === response.span ? previous : response);
       } catch {
         if (active) setHistogram(null);
       }
@@ -157,7 +149,10 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
     const run = async () => {
+      if (inFlight) return;
+      inFlight = true;
       setStencilLoading(true);
       try {
         const response = await getStencilPrice({ start: -Math.abs(blockLookback) });
@@ -166,14 +161,17 @@ export default function App() {
         setStencilError(null);
       } catch (error) {
         if (!active) return;
-        setStencil(null);
-        setStencilError(error instanceof Error ? error.message : String(error));
+        const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        setStencilError(detail ?? (error instanceof Error ? error.message : String(error)));
       } finally {
+        inFlight = false;
         if (active) setStencilLoading(false);
       }
     };
     run();
+    const id = window.setInterval(run, 10000);
     return () => {
+      window.clearInterval(id);
       active = false;
     };
   }, [blockLookback, refreshToken]);

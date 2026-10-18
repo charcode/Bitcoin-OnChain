@@ -6,6 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from .shared_cache import SharedCache
 from ..rpc import Rpc
 from .fulcrum_client import FulcrumClient
 
@@ -58,6 +59,7 @@ class StencilBlockCache:
         self.max_blocks = max(1, int(max_blocks))
         self._blocks: OrderedDict[str, tuple[StencilTransaction, ...]] = OrderedDict()
         self._lock = asyncio.Lock()
+        self.disk = SharedCache()
 
     def __len__(self):
         return len(self._blocks)
@@ -69,6 +71,13 @@ class StencilBlockCache:
             if block_hash in self._blocks:
                 self._blocks.move_to_end(block_hash)
                 return self._blocks[block_hash]
+            stored = self.disk.get('block-v1:' + block_hash)
+            if stored is not None:
+                records = tuple(StencilTransaction(item['txid'], tuple(item['inputs']), tuple(item['outputs'])) for item in stored)
+                self._blocks[block_hash] = records
+                while len(self._blocks) > self.max_blocks:
+                    self._blocks.popitem(last=False)
+                return records
             try:
                 # One bulk RPC replaces thousands of per-transaction calls.
                 block = await rpc.call('getblock', [block_hash, 2])
@@ -87,6 +96,8 @@ class StencilBlockCache:
                 if [tx.get('txid') for tx in transactions] != metadata['tx']:
                     raise RuntimeError('Incomplete Fulcrum block response')
             records = compact_transactions(transactions)
+            from dataclasses import asdict
+            self.disk.put('block-v1:' + block_hash, [asdict(item) for item in records])
             self._blocks[block_hash] = records
             while len(self._blocks) > self.max_blocks:
                 self._blocks.popitem(last=False)

@@ -1,4 +1,7 @@
 import asyncio
+import tempfile
+import os
+from unittest.mock import patch
 import unittest
 from unittest.mock import AsyncMock
 
@@ -34,6 +37,13 @@ class BlockRpc:
 
 
 class StencilCacheTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.env = patch.dict(os.environ, MODEL_CACHE_DB=os.path.join(self.temp.name, 'cache.sqlite'))
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
     async def test_day_window_reuses_143_blocks_and_fetches_only_new_tip(self):
         rpc = BlockRpc()
         cache = StencilBlockCache(288)
@@ -64,7 +74,7 @@ class StencilCacheTests(unittest.IsolatedAsyncioTestCase):
         await cache.get(rpc, None, 3)
         self.assertEqual(len(cache), 2)
         await cache.get(rpc, None, 1)
-        self.assertEqual(rpc.bulk_reads(), 4)
+        self.assertEqual(rpc.bulk_reads(), 3)  # evicted RAM inputs are served from disk
 
     async def test_partial_fulcrum_fallback_is_not_cached(self):
         rpc = BlockRpc()

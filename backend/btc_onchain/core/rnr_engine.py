@@ -161,10 +161,24 @@ class RnrEngine:
             engine = RnrEngine()
             await engine.run_loop(lambda: list(state.mempool_outputs.values()), stop_evt)
         """
+        from .shared_cache import SharedCache
+        disk = SharedCache()
+        for point in disk.get('live-history-v1') or []:
+            self.estimate_history.append(point)
+        # Historical points retain their original timestamps. Never restore an
+        # old mempool snapshot as a fresh current price.
+        previous = None
+        last_saved = 0.
         while not stop_evt.is_set():
             try:
                 outs = get_outs_callable()
-                self.run_once(outs)
+                fingerprint = tuple((o.get('value_btc'), o.get('weight', 1.)) for o in outs)
+                if fingerprint != previous:
+                    self.run_once(outs)
+                    previous = fingerprint
+                if self.last_run_ts > last_saved + 10:
+                    disk.put('live-history-v1', list(self.estimate_history))
+                    last_saved = self.last_run_ts
             except Exception as e:
                 print(f"[{_fmt_ts()}] [rnr error] {e}")
             await asyncio.sleep(SETTINGS.rnr_interval)

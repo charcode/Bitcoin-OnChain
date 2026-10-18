@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   Area,
   Bar,
@@ -51,7 +52,7 @@ export default function PrimaryResonanceChart({
     (histogram?.bins ?? []).map((bin) => [Math.round(bin.price), { count: bin.count, weight: bin.weight_sum }])
   );
 
-  const data = (curve?.points ?? []).map((point) => {
+  const data = useMemo(() => (curve?.points ?? []).map((point) => {
     const anchor = anchorLookup.get(Math.round(point.p));
     return {
       price: point.p,
@@ -59,7 +60,7 @@ export default function PrimaryResonanceChart({
       normalizedAnchor: anchor ? anchor.count / Math.max(1, histogramMax) : 0,
       anchorCount: anchor?.count ?? 0,
     };
-  });
+  }).sort((a, b) => a.price - b.price), [curve, histogram]);
 
   const strongestAnchors = [...(histogram?.bins ?? [])]
     .sort((a, b) => b.count - a.count)
@@ -100,7 +101,7 @@ export default function PrimaryResonanceChart({
               <YAxis
                 yAxisId="score"
                 tick={{ fill: "#94a3b8", fontSize: 12 }}
-                tickFormatter={(value) => value.toFixed(2)}
+                tickFormatter={(value) => Number(value).toExponential(1)}
                 width={56}
               >
                 <Label value="Resonance" angle={-90} position="insideLeft" fill="#94a3b8" style={{ textAnchor: "middle" }} />
@@ -110,7 +111,7 @@ export default function PrimaryResonanceChart({
                 contentStyle={{ backgroundColor: "#081120", borderRadius: 18, border: "1px solid rgba(148,163,184,0.16)" }}
                 labelFormatter={(value) => `Price ${USD.format(Number(value))}`}
                 formatter={(value: number, key: string) => {
-                  if (key === "score") return [value.toFixed(3), "Resonance"];
+                  if (key === "score") return [Number(value).toExponential(3), "Resonance"];
                   if (key === "anchorCount") return [Math.round(value).toLocaleString(), "Anchor concentration"];
                   return [value, key];
                 }}
@@ -132,7 +133,7 @@ export default function PrimaryResonanceChart({
                 fill="rgba(217,70,239,0.36)"
                 barSize={6}
                 radius={[4, 4, 0, 0]}
-                animationDuration={450}
+                isAnimationActive={false}
               />
               <Area
                 yAxisId="score"
@@ -141,7 +142,7 @@ export default function PrimaryResonanceChart({
                 stroke="#38bdf8"
                 strokeWidth={2.5}
                 fill="url(#resonanceFill)"
-                animationDuration={500}
+                isAnimationActive={false}
               />
 
               {livePrice && (

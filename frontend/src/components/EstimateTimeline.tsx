@@ -52,7 +52,7 @@ export default function EstimateTimeline({ data }: Props) {
               }}
             />
 
-            <Line yAxisId="price" type="monotone" dataKey="live" stroke="#7dd3fc" strokeWidth={2} dot={false} />
+            <Line yAxisId="price" type="monotone" dataKey="live" stroke="#7dd3fc" strokeWidth={2} dot={false} isAnimationActive={false} />
 
           </ComposedChart>
         </ResponsiveContainer>

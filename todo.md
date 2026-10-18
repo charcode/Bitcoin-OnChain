@@ -42,3 +42,7 @@
 - Add lint, test, and formatting commands to the root documentation.
 - Decide on a formal branching and review workflow.
 - Define a release checklist for research snapshots and dashboard deployments.
+
+
+## Shared computation and stable charts
+Implemented: persistent bounded range/block caches, shared concurrent computations, unchanged-input inference guard, server timeline history and stable chart updates. Deployed to Alienware Docker. Validation: 37 backend tests; TypeScript/Vite production build; eight concurrent cold views return the same warm-up response in 0.17–0.21 seconds. Persistent cache retained across container recreation.

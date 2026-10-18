@@ -59,3 +59,21 @@ See https://github.com/charbelgereige/bitnode_monitor/tree/feature/add-template-
 Runtime environment files were present in earlier repository history. This change untracks them without deleting the live files and excludes new credentials. It does not erase old history. Rotate any live credentials that were stored there according to the deployment's maintenance procedure; do not paste them into issues, docs or build arguments.
 
 Non-secret active model settings are recorded in [deploy/alienware-model-settings.json](deploy/alienware-model-settings.json). The root template mirrors the deployed 30,000–1,000,000 supported-price bounds; these are validation bounds, not evidence that every price in that interval can be estimated accurately.
+
+
+### Shared computation and persistent derived data
+Run one backend process (the provided Docker command does this). All viewers
+share its live producer; opening a browser does not start another model loop.
+`/data/model_cache.sqlite` beside the evaluation DB stores bounded compact block
+inputs, historical range results and the last 600 live history points. Set
+`MODEL_CACHE_DB` to override this path. Preserve the named evaluation volume.
+Historical keys include canonical end hash; reorgs invalidate old range results.
+Concurrent requests share one computation; custom ranges can still incur a cold
+calculation, once per range/hash. Live data warms up again after restart; restored
+history retains original timestamps and is never presented as a fresh quote.
+An unchanged live input set does not rerun inference. Freshness can therefore
+expire when ingestion stops, instead of an unchanged result being relabelled fresh.
+Do not add Uvicorn workers or replicas: scaling the API requires moving the single
+producer to a separate service and distributing its read model.
+
+Cold historical HTTP requests return 503 with Retry-After while shared work continues; the UI retries every 10 seconds. Automation can use `wait=true` to await that same job. Cache diagnostics are available at `/debug/shared_cache`.

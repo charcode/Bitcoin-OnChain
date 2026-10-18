@@ -7,3 +7,7 @@ Validation: 30 backend tests pass, frontend TypeScript/Vite build passes. Live h
 Deployment: C:/BitcoinLANPortal/docker-compose.price-shadow.yml with existing base; persistent bitcoinlanportal_resonance_price_evaluation volume. Previous images tagged before-price-shadow-20261018. Initial source backup C:/BitcoinNode/performance/resonance-improve-20261018/source-backup-142947; original full source archive retained.
 Next: accumulate at least seven days of paired shadow evidence and held-out replay before considering promotion. Confirm UI rendering on user screen. GitHub release preparation now includes all application changes requested by the user, excluding runtime secrets, logs and local backups.
 Risks: heuristic sensitivity band is not a confidence interval; effective output weights are not independent trades; gate thresholds unvalidated; round-BTC suppression can discard genuine payments; local search depends on coarse model and may abstain/alias; current exchange comparison is near-contemporaneous, not exact timestamp-matched market truth.
+
+
+## Shared computation and stable charts
+Implemented: persistent bounded range/block caches, shared concurrent computations, unchanged-input inference guard, server timeline history and stable chart updates. Deployed to Alienware Docker. Validation: 37 backend tests; TypeScript/Vite production build; eight concurrent cold views return the same warm-up response in 0.17–0.21 seconds. Persistent cache retained across container recreation.

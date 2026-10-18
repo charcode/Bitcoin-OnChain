@@ -13,6 +13,7 @@ from .mempool_cache import MempoolCache
 from .rnr_engine import RnrEngine
 from .distribution_engine import DistributionEngine
 from .stencil_cache import StencilBlockCache
+from .shared_cache import SharedCache
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,39 @@ class AppState:
     stencil_cache_end_hash: Optional[str] = None
     stencil_blocks: StencilBlockCache = field(default_factory=lambda: StencilBlockCache(SETTINGS.stencil_cache_blocks))
 
+    shared: SharedCache = field(default_factory=SharedCache)
+    stencil_jobs: dict = field(default_factory=dict)
+
+    async def shared_stencil(self, start_h, end_h, end_hash):
+        from .stencil_price import compute_stencil_price
+        async def compute():
+            result = await compute_stencil_price(self.rpc, self.fulcrum, start_h, end_h, cache=self.stencil_blocks)
+            if await self.rpc.call('getblockhash', [end_h]) != end_hash:
+                raise RuntimeError('Chain changed during stencil calculation; retry')
+            return result
+        key = f'stencil-v1:{start_h}:{end_h}:{end_hash}'
+        task = self.stencil_jobs.get(key)
+        if task is None:
+            task = asyncio.create_task(self.shared.obtain(key, compute))
+            self.stencil_jobs[key] = task
+            def finished(done):
+                self.stencil_jobs.pop(key, None)
+                if not done.cancelled() and done.exception() is not None:
+                    logger.warning('Shared stencil job failed: %s', done.exception())
+            task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    async def block_outputs(self, height):
+        block_hash = await self.rpc.call('getblockhash', [height])
+        async def fetch():
+            block = await self.rpc.call('getblock', [block_hash, 2])
+            if block.get('hash', block_hash) != block_hash or block.get('nTx', len(block['tx'])) != len(block['tx']):
+                raise RuntimeError('Incomplete block response')
+            return {'time': block.get('time', 0), 'values': [
+                float(out['value']) for tx in block['tx'] for out in tx.get('vout', [])
+                if isinstance(out.get('value'), (int, float)) and out['value'] > 0]}
+        return await asyncio.shield(asyncio.create_task(self.shared.obtain('outputs-v1:' + block_hash, fetch)))
+
     async def refresh_loop(self) -> None:
         await self.mempool.run(self.rpc, self.stop_evt)
 
@@ -53,8 +87,7 @@ class AppState:
                 end_h = tip_height
                 if (tip_hash != self.stencil_cache_end_hash
                         or start_h != self.stencil_cache_start or end_h != self.stencil_cache_end):
-                    result = await compute_stencil_price(
-                        self.rpc, self.fulcrum, start_h, end_h, cache=self.stencil_blocks)
+                    result = await self.shared_stencil(start_h, end_h, tip_hash)
                     if await self.rpc.call('getblockhash', [end_h]) != tip_hash:
                         raise RuntimeError('Chain changed during stencil refresh; retry')
                     self.stencil_cache = {
