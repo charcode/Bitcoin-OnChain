@@ -120,6 +120,9 @@ class Settings(BaseModel):
     distribution_bin_count: int = Field(default_factory=lambda: _env_int("DIST_BIN_COUNT", 60))
     distribution_block_max: int = Field(default_factory=lambda: _env_int("DIST_BLOCK_MAX", 288))
     block_fetch_max: int = Field(default_factory=lambda: _env_int("BLOCK_FETCH_MAX", 500))
+    stencil_cache_blocks: int = Field(default_factory=lambda: _env_int("STENCIL_CACHE_BLOCKS", 288), ge=1, validate_default=True)
+    stencil_lookback_blocks: int = Field(default_factory=lambda: _env_int("STENCIL_LOOKBACK_BLOCKS", 144), ge=1, validate_default=True)
+    stencil_interval_sec: float = Field(default_factory=lambda: _env_float("STENCIL_INTERVAL_SEC", 180.0), gt=0, validate_default=True)
 
     # Fulcrum
     fulcrum_enabled: bool = Field(default_factory=lambda: _env_bool("FULCRUM_ENABLED", True))

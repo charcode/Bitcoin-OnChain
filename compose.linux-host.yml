@@ -1,0 +1,8 @@
+# Native Linux only, when Core listens only on 127.0.0.1.
+services:
+  backend:
+    network_mode: host
+    ports: !reset []
+    environment:
+      BTC_RPC_URL: http://127.0.0.1:8332
+      FULCRUM_HOST: 127.0.0.1

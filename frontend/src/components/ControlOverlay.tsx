@@ -71,7 +71,6 @@ const ControlOverlay: React.FC<Props> = ({
   gridOptions,
   bucketOptions,
   columnOptions,
-  blockOptions,
   distSourceOptions,
   distBinSizeOptions,
   distScaleOptions,
@@ -92,7 +91,7 @@ const ControlOverlay: React.FC<Props> = ({
   const gridIndex = optionIndex(gridOptions, histGrid);
   const bucketIndex = optionIndex(bucketOptions, bucketSeconds);
   const columnIndex = optionIndex(columnOptions, columnCount);
-  // blockLookback now uses a continuous slider (1..144); blockOptions kept for backward-compat props
+  // blockLookback now uses a continuous slider; blockOptions kept for backward-compat props
   const distSizeIndex = optionIndex(distBinSizeOptions, distBinSize);
 
   const baseToggle = "flex-1 px-3 py-2 text-xs font-semibold uppercase tracking-wider transition";
@@ -111,7 +110,7 @@ const ControlOverlay: React.FC<Props> = ({
     <div className="space-y-8">
       <div className="space-y-2">
         <h2 className="text-xs font-semibold uppercase tracking-[0.35em] text-slate-300">Signal controls</h2>
-        <p className="text-sm text-slate-400">Tune heatmaps, histograms, and distribution windows.</p>
+        <p className="text-sm text-slate-400">Tune arrival tape timing, histograms, and distribution windows.</p>
       </div>
 
       <div className="grid gap-6 sm:grid-cols-2">
@@ -156,7 +155,7 @@ const ControlOverlay: React.FC<Props> = ({
         </div>
 
         <div className="space-y-2">
-          <div className="text-xs uppercase tracking-wide text-slate-400">Heatmap bucket (seconds)</div>
+          <div className="text-xs uppercase tracking-wide text-slate-400">Arrival step (seconds)</div>
           <input
             type="range"
             min={0}
@@ -170,7 +169,7 @@ const ControlOverlay: React.FC<Props> = ({
         </div>
 
         <div className="space-y-2">
-          <div className="text-xs uppercase tracking-wide text-slate-400">Heatmap columns</div>
+          <div className="text-xs uppercase tracking-wide text-slate-400">Arrival window slices</div>
           <input
             type="range"
             min={0}
@@ -188,9 +187,9 @@ const ControlOverlay: React.FC<Props> = ({
           <input
             type="range"
             min={1}
-            max={144}
+            max={432}
             step={1}
-            value={Math.max(1, Math.min(144, blockLookback))}
+            value={Math.max(1, Math.min(432, blockLookback))}
             onChange={(event) => onBlockLookbackChange(Number(event.target.value))}
             className="w-full accent-violet-400"
           />

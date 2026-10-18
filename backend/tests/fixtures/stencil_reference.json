@@ -1,0 +1,547 @@
+{
+  "baseline_source_sha256": "e27437fb8e0d6b18ca829f101f900c854b90cb2f57d15095c10db22d1ad6c890",
+  "blocks": {
+    "1": [
+      {
+        "txid": "parent",
+        "vin": [
+          {
+            "txid": "outside"
+          }
+        ],
+        "vout": [
+          {
+            "value": 0.001234,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          },
+          {
+            "value": 0.002789,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          }
+        ]
+      },
+      {
+        "txid": "child",
+        "vin": [
+          {
+            "txid": "parent"
+          }
+        ],
+        "vout": [
+          {
+            "value": 0.003456,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          },
+          {
+            "value": 0.004567,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          }
+        ]
+      },
+      {
+        "txid": "grandchild",
+        "vin": [
+          {
+            "txid": "child"
+          }
+        ],
+        "vout": [
+          {
+            "value": 0.0005123,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          },
+          {
+            "value": 0.0007345,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          }
+        ]
+      }
+    ],
+    "2": [
+      {
+        "txid": "later",
+        "vin": [
+          {
+            "txid": "parent"
+          }
+        ],
+        "vout": [
+          {
+            "value": 0.006789,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          },
+          {
+            "value": 0.007891,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          }
+        ]
+      },
+      {
+        "txid": "other",
+        "vin": [
+          {
+            "txid": "outside"
+          }
+        ],
+        "vout": [
+          {
+            "value": 0.0009134,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          },
+          {
+            "value": 0.0011567,
+            "scriptPubKey": {
+              "type": "witness_v0_keyhash"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "1:2": {
+      "samples_used": 6,
+      "estimated_price": 40292.87953606479,
+      "best_slide": 79,
+      "best_slide_score": 0.00011258558805038488,
+      "neighbor_slide": 78,
+      "neighbor_score": 4.6575855941887836e-05,
+      "average_slide_score": 4.957340244955434e-05,
+      "slides_considered": 342,
+      "usd100_btc": 0.0024831331052955702,
+      "usd100_neighbor_btc": 0.002454708915685031,
+      "round_stats": [
+        {
+          "usd_amount": 1,
+          "bins": [
+            119
+          ],
+          "btc_amount": 3.890451449942805e-06,
+          "sats": 389,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 257039.57827688643
+        },
+        {
+          "usd_amount": 5,
+          "bins": [
+            220
+          ],
+          "btc_amount": 1.2445146117713844e-05,
+          "sats": 1245,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401763.06109280884
+        },
+        {
+          "usd_amount": 10,
+          "bins": [
+            280,
+            281
+          ],
+          "btc_amount": 2.497509768402575e-05,
+          "sats": 2498,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 400398.83433152986
+        },
+        {
+          "usd_amount": 15,
+          "bins": [
+            315
+          ],
+          "btc_amount": 3.715352290971728e-05,
+          "sats": 3715,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 403730.2205890371
+        },
+        {
+          "usd_amount": 20,
+          "bins": [
+            340,
+            341
+          ],
+          "btc_amount": 4.983187122160315e-05,
+          "sats": 4983,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401349.5682524076
+        },
+        {
+          "usd_amount": 30,
+          "bins": [
+            375,
+            376
+          ],
+          "btc_amount": 7.456022253166867e-05,
+          "sats": 7456,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 402359.31414042943
+        },
+        {
+          "usd_amount": 50,
+          "bins": [
+            419,
+            420,
+            421
+          ],
+          "btc_amount": 0.0001244569598125978,
+          "sats": 12446,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401745.31079087866
+        },
+        {
+          "usd_amount": 100,
+          "bins": [
+            479,
+            480,
+            481,
+            482
+          ],
+          "btc_amount": 0.0002497675289509872,
+          "sats": 24977,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 400372.29987418966
+        },
+        {
+          "usd_amount": 150,
+          "bins": [
+            515
+          ],
+          "btc_amount": 0.0003715352290971724,
+          "sats": 37154,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 403730.22058903746
+        },
+        {
+          "usd_amount": 200,
+          "bins": [
+            540,
+            541
+          ],
+          "btc_amount": 0.0004983187122160314,
+          "sats": 49832,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401349.5682524077
+        },
+        {
+          "usd_amount": 300,
+          "bins": [
+            575,
+            576
+          ],
+          "btc_amount": 0.0007456022253166868,
+          "sats": 74560,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 402359.3141404294
+        },
+        {
+          "usd_amount": 500,
+          "bins": [
+            620
+          ],
+          "btc_amount": 0.0012445146117713857,
+          "sats": 124451,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401763.06109280844
+        },
+        {
+          "usd_amount": 1000,
+          "bins": [
+            680,
+            681
+          ],
+          "btc_amount": 0.002497509768402575,
+          "sats": 249751,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 400398.83433152986
+        },
+        {
+          "usd_amount": 1500,
+          "bins": [
+            715
+          ],
+          "btc_amount": 0.003715352290971724,
+          "sats": 371535,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 403730.2205890375
+        },
+        {
+          "usd_amount": 2000,
+          "bins": [
+            740,
+            741
+          ],
+          "btc_amount": 0.004983187122160313,
+          "sats": 498319,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401349.5682524078
+        },
+        {
+          "usd_amount": 5000,
+          "bins": [
+            820
+          ],
+          "btc_amount": 0.01244514611771385,
+          "sats": 1244515,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 401763.06109280867
+        },
+        {
+          "usd_amount": 10000,
+          "bins": [
+            880
+          ],
+          "btc_amount": 0.024831331052955704,
+          "sats": 2483133,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 402717.0343254591
+        }
+      ]
+    },
+    "2:2": {
+      "samples_used": 4,
+      "estimated_price": 86180.2929416561,
+      "best_slide": 13,
+      "best_slide_score": 8.163673008142578e-05,
+      "neighbor_slide": 12,
+      "neighbor_score": 3.533654456034803e-05,
+      "average_slide_score": 3.0850508418088e-05,
+      "slides_considered": 342,
+      "usd100_btc": 0.0011614486138403425,
+      "usd100_neighbor_btc": 0.0011481536214968829,
+      "round_stats": [
+        {
+          "usd_amount": 1,
+          "bins": [
+            53
+          ],
+          "btc_amount": 1.8197008586099826e-06,
+          "sats": 182,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 549540.8738576248
+        },
+        {
+          "usd_amount": 5,
+          "bins": [
+            154
+          ],
+          "btc_amount": 5.82103217770871e-06,
+          "sats": 582,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858954.1935787947
+        },
+        {
+          "usd_amount": 10,
+          "bins": [
+            214,
+            215
+          ],
+          "btc_amount": 1.168173084389937e-05,
+          "sats": 1168,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 856037.5284816949
+        },
+        {
+          "usd_amount": 15,
+          "bins": [
+            249
+          ],
+          "btc_amount": 1.7378008287493764e-05,
+          "sats": 1738,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 863159.9060057349
+        },
+        {
+          "usd_amount": 20,
+          "bins": [
+            274,
+            275
+          ],
+          "btc_amount": 2.3308117326442013e-05,
+          "sats": 2331,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858070.1615617361
+        },
+        {
+          "usd_amount": 30,
+          "bins": [
+            309,
+            310
+          ],
+          "btc_amount": 3.487443622025498e-05,
+          "sats": 3487,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 860228.9599903576
+        },
+        {
+          "usd_amount": 50,
+          "bins": [
+            353,
+            354,
+            355
+          ],
+          "btc_amount": 5.821289368212053e-05,
+          "sats": 5821,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858916.2441061913
+        },
+        {
+          "usd_amount": 100,
+          "bins": [
+            413,
+            414,
+            415,
+            416
+          ],
+          "btc_amount": 0.00011682505044284434,
+          "sats": 11683,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 855980.798817837
+        },
+        {
+          "usd_amount": 150,
+          "bins": [
+            449
+          ],
+          "btc_amount": 0.00017378008287493763,
+          "sats": 17378,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 863159.9060057349
+        },
+        {
+          "usd_amount": 200,
+          "bins": [
+            474,
+            475
+          ],
+          "btc_amount": 0.00023308117326442012,
+          "sats": 23308,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858070.1615617363
+        },
+        {
+          "usd_amount": 300,
+          "bins": [
+            509,
+            510
+          ],
+          "btc_amount": 0.0003487443622025498,
+          "sats": 34874,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 860228.9599903576
+        },
+        {
+          "usd_amount": 500,
+          "bins": [
+            554
+          ],
+          "btc_amount": 0.0005821032177708716,
+          "sats": 58210,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858954.1935787938
+        },
+        {
+          "usd_amount": 1000,
+          "bins": [
+            614,
+            615
+          ],
+          "btc_amount": 0.0011681730843899358,
+          "sats": 116817,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 856037.5284816957
+        },
+        {
+          "usd_amount": 1500,
+          "bins": [
+            649
+          ],
+          "btc_amount": 0.0017378008287493763,
+          "sats": 173780,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 863159.906005735
+        },
+        {
+          "usd_amount": 2000,
+          "bins": [
+            674,
+            675
+          ],
+          "btc_amount": 0.002330811732644201,
+          "sats": 233081,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858070.1615617364
+        },
+        {
+          "usd_amount": 5000,
+          "bins": [
+            754
+          ],
+          "btc_amount": 0.005821032177708716,
+          "sats": 582103,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 858954.1935787938
+        },
+        {
+          "usd_amount": 10000,
+          "bins": [
+            814
+          ],
+          "btc_amount": 0.011614486138403426,
+          "sats": 1161449,
+          "normalized_weight": 0.0,
+          "raw_weight": 0.0,
+          "implied_price": 860993.7521846008
+        }
+      ]
+    }
+  }
+}

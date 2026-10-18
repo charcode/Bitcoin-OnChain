@@ -162,6 +162,7 @@ export default function SatsDistributionPanel({
           bins: binCount,
           block_lookback: source === "blocks" ? blockLookback : undefined,
           weighted: source === "mempool" ? weighted : undefined,
+          scale,
         });
         if (!alive) return;
         setData(payload);
@@ -179,7 +180,7 @@ export default function SatsDistributionPanel({
     return () => {
       alive = false;
     };
-  }, [source, binSize, binCount, blockLookback, weighted, refreshToken]);
+  }, [source, binSize, binCount, blockLookback, weighted, scale, refreshToken]);
 
   const baseDataset = useMemo<ChartPoint[]>(() => {
     if (!data) return [];

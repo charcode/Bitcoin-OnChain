@@ -9,6 +9,7 @@ from .core.fulcrum_client import FulcrumClient
 from .core.app_state import AppState
 from .api.routes import router as api_router
 from .api.routes_prices import router as prices_router           # <-- NEW
+from .core.evaluation import EvaluationRecorder
 from .core.external_prices import ExternalPricePoller            # <-- NEW
 
 app = FastAPI(title="btc-onchain RNR Nowcaster", version="0.3.0")
@@ -40,14 +41,16 @@ async def _startup():
     # External prices poller
     app.state.app_state.ext_prices = None
     if SETTINGS.external_prices_enabled:
-        sources = [s.strip() for s in SETTINGS.external_prices_sources_csv.split(",") if s.strip()]
+        sources = SETTINGS.external_prices_sources
         poller = ExternalPricePoller(
             db_path=SETTINGS.external_prices_db_path,
-            interval_s=SETTINGS.external_prices_interval,
+            interval_s=SETTINGS.external_prices_poll_sec,
             sources=sources,
         )
         app.state.app_state.ext_prices = poller
         await poller.start()
+
+    app.state.app_state.evaluation = EvaluationRecorder(app.state.app_state, app.state.app_state.ext_prices, SETTINGS.external_prices_db_path)
 
     # spawn workers you already have
     _TASKS[:] = [
@@ -56,8 +59,8 @@ async def _startup():
         asyncio.create_task(app.state.app_state.stencil_loop(), name="stencil-loop"),
     ]
 
-    app.include_router(api_router)
-    app.include_router(prices_router)  # <-- NEW
+    if app.state.app_state.ext_prices is not None:
+        _TASKS.append(asyncio.create_task(app.state.app_state.evaluation.run(), name="price-evaluation"))
 
 @app.on_event("shutdown")
 async def _shutdown():
@@ -65,6 +68,7 @@ async def _shutdown():
     st.stop_evt.set()
     for t in _TASKS:
         t.cancel()
+    await asyncio.gather(*_TASKS, return_exceptions=True)
     try:
         await st.rpc.aclose()
     except Exception:
@@ -80,3 +84,7 @@ async def _shutdown():
             await st.ext_prices.stop()
         except Exception:
             pass
+
+
+app.include_router(api_router)
+app.include_router(prices_router)

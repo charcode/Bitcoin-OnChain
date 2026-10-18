@@ -1,5 +1,7 @@
 from __future__ import annotations
 import asyncio
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -10,6 +12,9 @@ from .fulcrum_client import FulcrumClient
 from .mempool_cache import MempoolCache
 from .rnr_engine import RnrEngine
 from .distribution_engine import DistributionEngine
+from .stencil_cache import StencilBlockCache
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,6 +31,8 @@ class AppState:
     stencil_cache_start: Optional[int] = None
     stencil_cache_end: Optional[int] = None
     stencil_cache_ts: float = 0.0
+    stencil_cache_end_hash: Optional[str] = None
+    stencil_blocks: StencilBlockCache = field(default_factory=lambda: StencilBlockCache(SETTINGS.stencil_cache_blocks))
 
     async def refresh_loop(self) -> None:
         await self.mempool.run(self.rpc, self.stop_evt)
@@ -33,26 +40,38 @@ class AppState:
     async def rnr_loop(self) -> None:
         await self.rnr.run_loop(self.mempool.get_recent_outputs, self.stop_evt)
 
-    async def stencil_loop(self, lookback_blocks: int = 144, interval_sec: float = 180.0) -> None:
+    async def stencil_loop(self, lookback_blocks: Optional[int] = None, interval_sec: Optional[float] = None) -> None:
         from .stencil_price import compute_stencil_price
+        lookback_blocks = SETTINGS.stencil_lookback_blocks if lookback_blocks is None else lookback_blocks
+        interval_sec = SETTINGS.stencil_interval_sec if interval_sec is None else interval_sec
         while not self.stop_evt.is_set():
             try:
-                tip_height = int(await self.rpc.call("getblockcount"))
+                chain = await self.rpc.call("getblockchaininfo")
+                tip_hash = chain['bestblockhash']
+                tip_height = int(chain['blocks'])
                 start_h = max(0, tip_height - int(abs(lookback_blocks)) + 1)
                 end_h = tip_height
-                result = await compute_stencil_price(self.rpc, self.fulcrum, start_h, end_h)
-                self.stencil_cache = {
-                    "start_height": start_h,
-                    "end_height": end_h,
-                    "block_count": (end_h - start_h + 1),
-                    **result,
-                }
-                self.stencil_estimated_price = float(result.get("estimated_price", 0.0))
-                self.stencil_cache_start = start_h
-                self.stencil_cache_end = end_h
-                self.stencil_cache_ts = asyncio.get_event_loop().time()
+                if (tip_hash != self.stencil_cache_end_hash
+                        or start_h != self.stencil_cache_start or end_h != self.stencil_cache_end):
+                    result = await compute_stencil_price(
+                        self.rpc, self.fulcrum, start_h, end_h, cache=self.stencil_blocks)
+                    if await self.rpc.call('getblockhash', [end_h]) != tip_hash:
+                        raise RuntimeError('Chain changed during stencil refresh; retry')
+                    self.stencil_cache = {
+                        "start_height": start_h,
+                        "end_height": end_h,
+                        "block_count": (end_h - start_h + 1),
+                        **result,
+                    }
+                    self.stencil_estimated_price = float(result.get("estimated_price", 0.0))
+                    self.stencil_cache_start = start_h
+                    self.stencil_cache_end = end_h
+                    self.stencil_cache_end_hash = tip_hash
+                    self.stencil_cache_ts = time.time()
+                    logger.info('Stencil refreshed blocks %s-%s; compact cache blocks=%s',
+                                start_h, end_h, len(self.stencil_blocks))
             except Exception:
-                pass
+                logger.warning('Stencil refresh failed; retaining last successful result', exc_info=True)
             try:
                 await asyncio.wait_for(self.stop_evt.wait(), timeout=interval_sec)
             except asyncio.TimeoutError:
@@ -62,20 +81,23 @@ class AppState:
         """
         Safe getter for the latest estimate; returns a default when not ready.
         """
-        if self.rnr.ema_price is None:
+        live_price = self.rnr.ema_price
+        if (
+            live_price is None
+            or live_price < SETTINGS.price_min
+            or live_price > SETTINGS.price_max
+        ):
             return PriceEstimate(
                 t=0.0,
-                price=0.0,
+                price=None,
                 confidence=0.0,
                 curvature=0.0,
                 samples_used=len(self.mempool.outputs),
             )
         return PriceEstimate(
             t=float(self.rnr.last_run_ts),
-            price=float(self.rnr.ema_price),
+            price=float(live_price),
             confidence=float(self.rnr.last_confidence or 0.0),
             curvature=float(self.rnr.last_curvature or 0.0),
             samples_used=int(self.rnr.last_samples_used),
         )
-
-

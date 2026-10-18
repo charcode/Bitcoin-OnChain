@@ -1,9 +1,21 @@
-﻿export type PriceNow = {
+export type PriceNow = {
   t: number;
-  price: number;
+  price: number | null;
   confidence: number;
   curvature: number;
   samples_used: number;
+};
+
+export type NodeStatus = {
+  t: number;
+  status: "ok" | "not_ready" | "missing";
+  connected: boolean;
+  message: string;
+  chain?: string | null;
+  blocks?: number | null;
+  headers?: number | null;
+  initialblockdownload?: boolean | null;
+  mempool_size?: number | null;
 };
 
 export type CurvePoint = { p: number; s: number };
@@ -12,6 +24,22 @@ export type CurveResp = { t: number; points: CurvePoint[] };
 export type CandidatesInfo = {
   total_outputs_cached: number;
   usable: number;
+};
+
+export type HistogramBin = {
+  price: number;
+  count: number;
+  weight_sum: number;
+};
+
+export type HistogramResp = {
+  t: number;
+  grid: number;
+  span: number;
+  window: number;
+  used_price: number;
+  bins: HistogramBin[];
+  total_samples: number;
 };
 
 export type HeatmapBucket = {
@@ -28,6 +56,58 @@ export type HeatmapResp = {
   max_count: number;
   total_samples: number;
   overflow: boolean;
+};
+
+export type MempoolArrival = {
+  ts: number;
+  age_sec: number;
+  value_btc: number;
+  value_usd: number;
+  weight: number;
+  txid?: string | null;
+  vout_n?: number | null;
+  address_out?: string | null;
+};
+
+export type RecentArrivalsResp = {
+  t: number;
+  current_price: number;
+  window_sec: number;
+  total_samples: number;
+  arrivals: MempoolArrival[];
+};
+
+export type EstimateHistoryPoint = {
+  t: number;
+  raw_price: number;
+  ema_price: number;
+  confidence: number;
+  curvature: number;
+  samples_used: number;
+};
+
+export type EstimateHistoryResp = {
+  t: number;
+  window_sec: number;
+  points: EstimateHistoryPoint[];
+};
+
+export type BlockTimelineSlice = {
+  height: number;
+  time: number;
+  counts: number[];
+  total_outputs: number;
+};
+
+export type BlockTimelineResp = {
+  t: number;
+  current_price: number;
+  current_block_age_sec: number;
+  tip_height: number;
+  last_block_time: number;
+  bin_edges_usd: number[];
+  blocks: BlockTimelineSlice[];
+  max_count: number;
 };
 export type RoundUsdStat = {
   usd_amount: number;
@@ -76,4 +156,3 @@ export type DistributionResp = {
   block_end: number | null;
   block_count: number | null;
 };
-

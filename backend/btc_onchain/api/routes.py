@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from ..models import (
     PriceEstimate,
+    NodeStatus,
     CurveResp,
     CurvePoint,
     CandidatesInfo,
@@ -21,6 +22,12 @@ from ..models import (
     StencilPriceResp,
     DistributionResp,
     DistributionBin,
+    RecentArrivalsResp,
+    MempoolArrival,
+    EstimateHistoryResp,
+    EstimateHistoryPoint,
+    BlockTimelineResp,
+    BlockTimelineSlice,
 )
 from ..config import SETTINGS
 from ..core.stencil_price import compute_stencil_price
@@ -87,6 +94,42 @@ async def price_now(request: Request):
     return st.latest_price_now()
 
 
+@router.get("/node/status", response_model=NodeStatus)
+async def node_status(request: Request):
+    st = _state(request)
+    now = float(time.time())
+    try:
+        info = await st.rpc.call("getblockchaininfo")
+        mempool = await st.rpc.call("getmempoolinfo")
+    except Exception as exc:
+        msg = str(exc)
+        if "-28" in msg or "Loading" in msg or "Verifying blocks" in msg or "Rewinding blocks" in msg:
+            return NodeStatus(
+                t=now,
+                status="not_ready",
+                connected=True,
+                message="Bitcoin node is starting up and is not ready yet.",
+            )
+        return NodeStatus(
+            t=now,
+            status="missing",
+            connected=False,
+            message="Cannot connect to the Bitcoin node RPC.",
+        )
+
+    return NodeStatus(
+        t=now,
+        status="ok",
+        connected=True,
+        message="Bitcoin node is connected and ready.",
+        chain=info.get("chain"),
+        blocks=info.get("blocks"),
+        headers=info.get("headers"),
+        initialblockdownload=info.get("initialblockdownload"),
+        mempool_size=mempool.get("size"),
+    )
+
+
 @router.get("/rnr/curve", response_model=CurveResp)
 async def rnr_curve(request: Request):
     st = _state(request)
@@ -100,6 +143,121 @@ async def debug_candidates(request: Request):
     total = len(st.mempool.outputs)
     usable = len(st.mempool.get_recent_outputs())
     return CandidatesInfo(total_outputs_cached=total, usable=usable)
+
+
+@router.get("/debug/recent_arrivals", response_model=RecentArrivalsResp)
+async def debug_recent_arrivals(
+    request: Request,
+    window_sec: int = Query(180, ge=10, le=3600, description="How many recent seconds of arrivals to include"),
+    limit: int = Query(1200, ge=50, le=5000, description="Maximum number of arrivals to return"),
+):
+    st = _state(request)
+    current_price = float(st.rnr.ema_price or 0.0)
+    arrivals = st.mempool.get_recent_arrivals(window_sec=window_sec, current_price=current_price, limit=limit)
+    return RecentArrivalsResp(
+        t=float(time.time()),
+        current_price=current_price,
+        window_sec=int(window_sec),
+        total_samples=len(arrivals),
+        arrivals=[MempoolArrival(**item) for item in arrivals],
+    )
+
+
+@router.get("/debug/estimate_history", response_model=EstimateHistoryResp)
+async def debug_estimate_history(
+    request: Request,
+    window_sec: int = Query(300, ge=30, le=7200, description="How many recent seconds of estimate history to include"),
+    limit: int = Query(300, ge=10, le=1000, description="Maximum number of estimate points to return"),
+):
+    st = _state(request)
+    now = time.time()
+    cutoff = now - int(window_sec)
+    points = [
+        EstimateHistoryPoint(**item)
+        for item in st.rnr.estimate_history
+        if float(item.get("t", 0.0)) >= cutoff
+    ]
+    if len(points) > limit:
+        points = points[-limit:]
+    return EstimateHistoryResp(
+        t=float(now),
+        window_sec=int(window_sec),
+        points=points,
+    )
+
+
+@router.get("/debug/block_timeline", response_model=BlockTimelineResp)
+async def debug_block_timeline(
+    request: Request,
+    block_count: int = Query(6, ge=1, le=24, description="How many recent blocks to include"),
+    bin_count: int = Query(24, ge=8, le=80, description="How many log-spaced USD bins to use"),
+    min_usd: float = Query(10.0, gt=0, description="Lower USD bound for the heatmap"),
+    max_usd: float = Query(100000.0, gt=0, description="Upper USD bound for the heatmap"),
+    price_usd: float | None = Query(None, gt=0, description="Optional implied BTC/USD price; defaults to current live estimate"),
+):
+    st = _state(request)
+    tip_height = int(await st.rpc.call("getblockcount"))
+    count = max(1, int(block_count))
+    start_height = max(0, tip_height - count + 1)
+    current_price = float(price_usd or st.rnr.ema_price or SETTINGS.price_min)
+
+    lo = max(0.01, float(min_usd))
+    hi = max(lo + 1.0, float(max_usd))
+    log_lo = math.log10(lo)
+    log_hi = math.log10(hi)
+    step = (log_hi - log_lo) / float(bin_count)
+    bin_edges_usd = [10 ** (log_lo + idx * step) for idx in range(bin_count + 1)]
+
+    blocks: list[BlockTimelineSlice] = []
+    max_count_seen = 0
+    last_block_time = 0
+
+    for height in range(start_height, tip_height + 1):
+        block_hash = await st.rpc.call("getblockhash", [height])
+        block = await st.rpc.call("getblock", [block_hash, 2])
+        block_time = int(block.get("time", 0)) if isinstance(block, dict) else 0
+        if height == tip_height:
+            last_block_time = block_time
+
+        counts = [0 for _ in range(bin_count)]
+        total_outputs = 0
+        txs = block.get("tx", []) if isinstance(block, dict) else []
+        for tx in txs:
+            vouts = tx.get("vout", []) if isinstance(tx, dict) else []
+            for vout in vouts:
+                value = vout.get("value") if isinstance(vout, dict) else None
+                if not isinstance(value, (int, float)) or value <= 0:
+                    continue
+                usd_value = float(value) * current_price
+                if usd_value < lo or usd_value > hi:
+                    continue
+                ratio = (math.log10(usd_value) - log_lo) / max(1e-9, (log_hi - log_lo))
+                idx = min(bin_count - 1, max(0, int(ratio * bin_count)))
+                counts[idx] += 1
+                total_outputs += 1
+
+        block_peak = max(counts) if counts else 0
+        max_count_seen = max(max_count_seen, block_peak)
+        blocks.append(
+            BlockTimelineSlice(
+                height=height,
+                time=block_time,
+                counts=counts,
+                total_outputs=total_outputs,
+            )
+        )
+
+    now = time.time()
+    return BlockTimelineResp(
+        t=float(now),
+        current_price=current_price,
+        current_block_age_sec=float(max(0.0, now - last_block_time)) if last_block_time else 0.0,
+        tip_height=tip_height,
+        last_block_time=last_block_time,
+        bin_edges_usd=[float(edge) for edge in bin_edges_usd],
+        blocks=blocks,
+        max_count=int(max_count_seen),
+    )
 
 
 @router.get("/debug/histogram", response_model=HistogramResp)
@@ -268,23 +426,24 @@ async def debug_stencil_price(
     start_height, end_height, tip_height, count = await _resolve_block_range(st, start, end)
 
     # Serve cached result for "last N blocks"
+    end_hash = await st.rpc.call('getblockhash', [end_height])
     if (
         st.stencil_cache is not None
         and st.stencil_cache_start == start_height
         and st.stencil_cache_end == end_height
+        and st.stencil_cache_end_hash == end_hash
     ):
         cached = st.stencil_cache
-        return StencilPriceResp(
-            start_height=start_height,
-            end_height=end_height,
-            block_count=count,
-            tip_height=tip_height,
-            **cached,
-        )
+        return StencilPriceResp(**{
+            **cached, 'start_height': start_height, 'end_height': end_height,
+            'block_count': count, 'tip_height': tip_height,
+        })
 
     # ---- NEW: robust error reporting so clients see the root cause instead of 500 ----
     try:
-        result = await compute_stencil_price(st.rpc, st.fulcrum, start_height, end_height)
+        result = await compute_stencil_price(st.rpc, st.fulcrum, start_height, end_height, cache=st.stencil_blocks)
+        if await st.rpc.call('getblockhash', [end_height]) != end_hash:
+            raise RuntimeError('Chain changed during stencil request; retry')
     except ValueError as exc:
         # bad user input or range -> 400
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -313,6 +472,7 @@ async def debug_stencil_price(
         }
         st.stencil_cache_start = start_height
         st.stencil_cache_end = end_height
+        st.stencil_cache_end_hash = end_hash
         st.stencil_estimated_price = float(result.get("estimated_price", 0.0))
         st.stencil_cache_ts = time.time()
     except Exception:

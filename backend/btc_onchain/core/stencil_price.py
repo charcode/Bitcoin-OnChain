@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 from ..models import RoundUsdStat
 from ..rpc import Rpc
 from .fulcrum_client import FulcrumClient
+from .stencil_cache import StencilBlockCache
 
 logger = logging.getLogger(__name__)
 
@@ -314,71 +315,28 @@ async def compute_stencil_price(
     fulcrum: Optional[FulcrumClient],
     start_height: int,
     end_height: int,
+    *,
+    cache: Optional[StencilBlockCache] = None,
 ) -> Dict[str, object]:
     counts = [0.0] * _BIN_COUNT
     txids_seen: set[str] = set()
     total_outputs = 0
 
-    use_fulcrum = fulcrum is not None
+    cache = cache if cache is not None else StencilBlockCache()
+    end_hash = await rpc.call('getblockhash', [end_height])
 
     for height in range(start_height, end_height + 1):
-        transactions: Optional[Iterable[dict]] = None
-        if use_fulcrum:
-            try:
-                transactions = await fulcrum.get_block_transactions(height)  # type: ignore[assignment]
-            except Exception as exc:
-                logger.warning("Fulcrum fetch failed at height %s, falling back to RPC", height, exc_info=exc)
-                use_fulcrum = False
-        if transactions is None:
-            block_hash = await rpc.call("getblockhash", [height])
-            block = await rpc.call("getblock", [block_hash, 2])
-            transactions = block.get("tx", [])  # type: ignore[arg-type]
-        for tx in transactions:
-            vin = tx.get("vin", [])
-            vout = tx.get("vout", [])
-            if not vout:
+        for tx in await cache.get(rpc, fulcrum, height):
+            if any(txid in txids_seen for txid in tx.inputs):
                 continue
-            if vin and isinstance(vin[0], dict) and "coinbase" in vin[0]:
-                continue
-            if len(vin) > 5 or len(vout) != 2:
-                continue
-            if any((out.get("scriptPubKey", {}) or {}).get("type") == "nulldata" for out in vout):
-                continue
-
-            witness_total = 0
-            witness_exceeds = False
-            for vin_item in vin:
-                witnesses = vin_item.get("txinwitness") or []
-                for witness in witnesses:
-                    try:
-                        data = bytes.fromhex(witness)
-                    except ValueError:
-                        data = b""
-                    length = len(data)
-                    witness_total += length
-                    if length > 500 or witness_total > 500:
-                        witness_exceeds = True
-                        break
-                if witness_exceeds:
-                    break
-            if witness_exceeds:
-                continue
-
-            same_day = any(vin_item.get("txid") in txids_seen for vin_item in vin if "txid" in vin_item)
-            if same_day:
-                continue
-
-            for out in vout:
-                value = out.get("value")
-                if value is None:
-                    continue
-                amount = float(value)
+            for amount in tx.outputs:
                 _place_output(counts, amount)
                 total_outputs += 1
+            if tx.txid is not None:
+                txids_seen.add(tx.txid)
 
-            txid = tx.get("txid")
-            if isinstance(txid, str):
-                txids_seen.add(txid)
+    if await rpc.call('getblockhash', [end_height]) != end_hash:
+        raise RuntimeError('Chain changed during stencil computation; retry')
 
     if total_outputs == 0:
         raise ValueError("No eligible outputs found in requested block range")

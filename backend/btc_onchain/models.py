@@ -1,14 +1,26 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from typing import List, Literal
 from pydantic import BaseModel
 
 
 class PriceEstimate(BaseModel):
     t: float
-    price: float
+    price: float | None
     confidence: float
     curvature: float
     samples_used: int
+
+
+class NodeStatus(BaseModel):
+    t: float
+    status: Literal["ok", "not_ready", "missing"]
+    connected: bool
+    message: str
+    chain: str | None = None
+    blocks: int | None = None
+    headers: int | None = None
+    initialblockdownload: bool | None = None
+    mempool_size: int | None = None
 
 
 class CurvePoint(BaseModel):
@@ -56,6 +68,58 @@ class HeatmapResp(BaseModel):
     max_count: int
     total_samples: int
     overflow: bool
+
+
+class MempoolArrival(BaseModel):
+    ts: float
+    age_sec: float
+    value_btc: float
+    value_usd: float
+    weight: float
+    txid: str | None = None
+    vout_n: int | None = None
+    address_out: str | None = None
+
+
+class RecentArrivalsResp(BaseModel):
+    t: float
+    current_price: float
+    window_sec: int
+    total_samples: int
+    arrivals: List[MempoolArrival]
+
+
+class EstimateHistoryPoint(BaseModel):
+    t: float
+    raw_price: float
+    ema_price: float
+    confidence: float
+    curvature: float
+    samples_used: int
+
+
+class EstimateHistoryResp(BaseModel):
+    t: float
+    window_sec: int
+    points: List[EstimateHistoryPoint]
+
+
+class BlockTimelineSlice(BaseModel):
+    height: int
+    time: int
+    counts: List[int]
+    total_outputs: int
+
+
+class BlockTimelineResp(BaseModel):
+    t: float
+    current_price: float
+    current_block_age_sec: float
+    tip_height: int
+    last_block_time: int
+    bin_edges_usd: List[float]
+    blocks: List[BlockTimelineSlice]
+    max_count: int
 
 class BlockSummary(BaseModel):
     height: int
@@ -117,4 +181,3 @@ class DistributionResp(BaseModel):
     block_start: int | None = None
     block_end: int | None = None
     block_count: int | None = None
-

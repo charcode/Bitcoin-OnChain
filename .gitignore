@@ -1,1 +1,33 @@
+# Secrets and host-specific runtime configuration
+.env
+.env.*
+!.env.example
+!.env.docker.example
+**/.env
+**/.env.*
+!**/.env.example
+**/local.env
+**/local.env.*
+*.pem
+*.key
+*.pfx
+# Runtime databases, telemetry and dependencies
+logs/
+**/logs/
+*.log
+*.sqlite*
+*.db
+*.db-*
+**/__pycache__/
+*.py[cod]
+**/node_modules/
+**/dist/
+**/.venv/
+**/venv/
+*.tsbuildinfo
 backend/dump.txt
+# Local backups
+*.before-*
+*.bak
+*.backup*
+.DS_Store

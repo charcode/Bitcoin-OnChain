@@ -1,0 +1,52 @@
+# Standalone web setup against an existing synchronized Bitcoin node.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: bitcoin-resonance/backend:source
+    restart: unless-stopped
+    environment:
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://host.docker.internal:8332}
+      BTC_RPC_USER: ${BTC_RPC_USER:?Set BTC_RPC_USER in .env}
+      BTC_RPC_PASS: ${BTC_RPC_PASS:?Set BTC_RPC_PASS in .env}
+      FULCRUM_ENABLED: ${FULCRUM_ENABLED:-false}
+      FULCRUM_HOST: ${FULCRUM_HOST:-host.docker.internal}
+      FULCRUM_PORT: ${FULCRUM_PORT:-50001}
+      FULCRUM_SSL: ${FULCRUM_SSL:-false}
+      PRICE_MIN: ${PRICE_MIN:-30000}
+      PRICE_MAX: ${PRICE_MAX:-1000000}
+      LOOKBACK_SEC: 900
+      DECODE_PER_TICK: 50
+      SCAN_INTERVAL: 2
+      RNR_INTERVAL: 2
+      MIN_SAMPLES: 500
+      EXT_PRICE_ENABLED: "true"
+      EXTERNAL_PRICE_SOURCES: kraken,coinbase,bitstamp
+      EXT_PRICE_POLL_SEC: 30
+      EXT_PRICE_DB: /data/evaluation.sqlite
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - evaluation:/data
+    mem_limit: 2g
+    cpus: 2
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:8000}
+    image: bitcoin-resonance/frontend:source
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173"
+    mem_limit: 256m
+volumes:
+  evaluation:

@@ -1,0 +1,15 @@
+{
+  "captured_date": "2026-10-18",
+  "scope": "Non-secret active estimator settings; exchange prices are evaluation-only",
+  "settings": {
+    "lookback_sec": 900.0,
+    "ema_alpha": 0.25,
+    "rnr_interval": 2.0,
+    "decode_per_tick": 50,
+    "scan_interval": 2.0,
+    "min_samples": 500,
+    "price_min": 30000.0,
+    "price_max": 1000000.0,
+    "stencil_lookback_blocks": 144
+  }
+}

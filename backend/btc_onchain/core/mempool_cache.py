@@ -17,6 +17,9 @@ class TxOut:
     ts: float          # unix seconds when cached
     value_btc: float   # output value in BTC
     weight: float      # heuristic weight (<= 1)
+    txid: str | None = None
+    vout_n: int | None = None
+    address_out: str | None = None
 
 
 @dataclass
@@ -26,7 +29,10 @@ class MempoolCache:
     Each cached entry is a TxOut(ts, value_btc, weight).
     """
     outputs: Deque[TxOut] = field(default_factory=lambda: deque(maxlen=500_000))
+    recent_arrivals: Deque[TxOut] = field(default_factory=lambda: deque(maxlen=20_000))
     last_scan_ts: float = 0.0
+    # Keep decoded IDs while present or while their rolling samples remain.
+    seen_txids: Dict[str, float] = field(default_factory=dict)
 
     def prune(self, now: float | None = None) -> None:
         now = now or time.time()
@@ -35,16 +41,49 @@ class MempoolCache:
         while self.outputs and self.outputs[0].ts < cutoff:
             self.outputs.popleft()
 
-    def add_outputs(self, values_btc: List[float], weight: float, now: float | None = None) -> None:
-        now = now or time.time()
+    def add_outputs(self, records: List[Dict[str, float | int | str | None]], weight: float, now: float | None = None) -> None:
+        now = time.time() if now is None else now
         w = float(weight)
-        for v in values_btc:
-            self.outputs.append(TxOut(ts=now, value_btc=float(v), weight=w))
+        for record in records:
+            tx_out = TxOut(
+                ts=now,
+                value_btc=float(record["value_btc"]),
+                weight=w,
+                txid=str(record["txid"]) if record.get("txid") else None,
+                vout_n=int(record["vout_n"]) if record.get("vout_n") is not None else None,
+                address_out=str(record["address_out"]) if record.get("address_out") else None,
+            )
+            self.outputs.append(tx_out)
+            self.recent_arrivals.append(tx_out)
 
     def get_recent_outputs(self) -> List[Dict[str, float]]:
         self.prune()
         # Return dicts used by rnr.py
         return [{"value_btc": x.value_btc, "weight": x.weight} for x in self.outputs]
+
+    def get_recent_arrivals(self, window_sec: int, current_price: float, limit: int = 1200) -> List[Dict[str, float | int | str | None]]:
+        now = time.time()
+        cutoff = now - max(1, int(window_sec))
+        items: List[Dict[str, float | int | str | None]] = []
+        for out in reversed(self.recent_arrivals):
+            if out.ts < cutoff:
+                break
+            items.append(
+                {
+                    "ts": float(out.ts),
+                    "age_sec": float(max(0.0, now - out.ts)),
+                    "value_btc": float(out.value_btc),
+                    "value_usd": float(out.value_btc * current_price) if current_price > 0 else 0.0,
+                    "weight": float(out.weight),
+                    "txid": out.txid,
+                    "vout_n": out.vout_n,
+                    "address_out": out.address_out,
+                }
+            )
+            if len(items) >= max(1, int(limit)):
+                break
+        items.reverse()
+        return items
 
     async def scan_once(self, rpc: Rpc) -> Tuple[int, int]:
         """
@@ -52,16 +91,28 @@ class MempoolCache:
         Returns (decoded_txs, vouts_added)
         """
         txids = await rpc.call("getrawmempool", [True])  # verbose
-        # Sort newest first based on "time" when available
-        sorted_ids = sorted(txids.items(), key=lambda kv: kv[1].get("time", 0), reverse=True)
+        now = time.time()
+        cutoff = now - SETTINGS.lookback_sec
+        self.seen_txids = {
+            txid: observed for txid, observed in self.seen_txids.items()
+            if txid in txids or observed >= cutoff
+        }
+        # Only recent unseen transactions consume the decode budget. Persistent
+        # or reappearing IDs cannot refresh old samples into the rolling window.
+        sorted_ids = sorted(
+            ((txid, meta) for txid, meta in txids.items()
+             if txid not in self.seen_txids and meta.get("time", now) >= cutoff),
+            key=lambda kv: kv[1].get("time", 0), reverse=True,
+        )
         to_decode = max(0, int(SETTINGS.decode_per_tick))
         dec = 0
         added = 0
-        now = time.time()
+        attempted = 0
 
         for txid, meta in sorted_ids:
-            if dec >= to_decode:
+            if attempted >= to_decode:
                 break
+            attempted += 1
             try:
                 raw = await rpc.call("getrawtransaction", [txid, True])
                 vouts = raw.get("vout", [])
@@ -69,15 +120,27 @@ class MempoolCache:
                 is_rbf = bool(meta.get("bip125-replaceable", False))
                 w = weight_output(n_vout=n_vout, is_rbf=is_rbf)
 
-                values: List[float] = []
+                values: List[Dict[str, float | int | str | None]] = []
                 for o in vouts or []:
                     val = o.get("value")
                     if isinstance(val, (int, float)):
-                        values.append(float(val))  # BTC
+                        spk = o.get("scriptPubKey", {}) if isinstance(o, dict) else {}
+                        addr = None
+                        if isinstance(spk, dict):
+                            addr = spk.get("address") or (spk.get("addresses") or [None])[0]
+                        values.append(
+                            {
+                                "value_btc": float(val),
+                                "txid": txid,
+                                "vout_n": o.get("n") if isinstance(o, dict) else None,
+                                "address_out": addr,
+                            }
+                        )
 
                 if values:
                     self.add_outputs(values, weight=w, now=now)
                     added += len(values)
+                self.seen_txids[txid] = now
                 dec += 1
             except Exception as e:
                 # Log and continue on individual tx failures

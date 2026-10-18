@@ -38,16 +38,17 @@ def rnr_histogram_usd(
 
     center = round(price_usd / grid) * grid
     anchors = [center + k * grid for k in range(-span_mults, span_mults + 1)]
+    # Convert once, then evaluate windows in NumPy rather than repeatedly
+    # traversing Python dictionaries for every anchor/grid.
+    outputs = list(outs)
+    usd_values = np.fromiter((float(o['value_btc']) * price_usd for o in outputs), dtype=float)
+    weights = np.fromiter((float(o.get('weight', 1.0)) for o in outputs), dtype=float)
 
     bins = []
     for a in anchors:
-        c = 0
-        wsum = 0.0
-        for o in outs:
-            usd = float(o["value_btc"]) * price_usd
-            if abs(usd - a) <= window_half:
-                c += 1
-                wsum += float(o.get("weight", 1.0))
+        included = np.abs(usd_values - a) <= window_half
+        c = np.count_nonzero(included)
+        wsum = np.sum(weights[included])
         bins.append({"price": float(a), "count": int(c), "weight_sum": float(wsum)})
     return bins
 

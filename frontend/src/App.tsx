@@ -1,378 +1,296 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import ControlOverlay from "./components/ControlOverlay";
-import PriceCards from "./components/PriceCards";
+import EvaluationPanel from "./components/EvaluationPanel";
+import AdvancedControlsPanel from "./components/AdvancedControlsPanel";
+import ConcentrationPanel from "./components/ConcentrationPanel";
+import EstimateTimeline from "./components/EstimateTimeline";
+import MethodologyDrawer from "./components/MethodologyDrawer";
 import PriceBanner from "./components/PriceBanner";
-import RoundNumberHistogram from "./components/RoundNumberHistogram";
-import TransactionsHeatmap from "./components/TransactionsHeatmap";
-import RoundUsdHeatmap from "./components/RoundUsdHeatmap";
-import SatsDistributionPanel from "./components/SatsDistributionPanel";
-import CurveChart from "./components/CurveChart";
-import CandidatesPanel from "./components/CandidatesPanel";
-import { getPriceNow, getStencilPrice, getRnrCurve } from "./lib/api";
-import type { PriceNow, StencilPriceResp, CurveResp } from "./lib/types";
-import { usePriceStore } from "./state/usePriceStore.tsx";
+import PrimaryResonanceChart from "./components/PrimaryResonanceChart";
+import QuickControls from "./components/QuickControls";
+import TopStatBar from "./components/TopStatBar";
+import type { StatItem } from "./components/TopStatBar";
+import { getCandidates, getHistogram, getNodeStatus, getPriceNow, getRnrCurve, getStencilPrice } from "./lib/api";
+import type { CandidatesInfo, CurveResp, HistogramResp, NodeStatus, PriceNow, StencilPriceResp } from "./lib/types";
+import { usePriceStore } from "./state/usePriceStore";
 
-const HIST_GRID_OPTIONS = [10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000];
-const HEAT_BUCKET_OPTIONS = [15, 30, 60, 120, 300];
-const HEAT_COLUMN_OPTIONS = [12, 24, 36, 48, 72];
-const BLOCK_LOOKBACK_OPTIONS = [36, 72, 144, 288, 432];
-const DIST_SOURCE_OPTIONS: Array<"mempool" | "blocks"> = ["mempool", "blocks"];
-const DIST_BIN_SIZE_OPTIONS = [1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 5_000_000];
-const DIST_SCALE_OPTIONS: Array<"linear" | "sqrt" | "log"> = ["linear", "sqrt", "log"];
+type Preset = "conservative" | "balanced" | "fast";
+type TimelinePoint = {
+  t: number;
+  live: number;
+  blend: number;
+  confidence: number;
+};
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-const HERO_CURRENCY = new Intl.NumberFormat(undefined, {
+const USD = new Intl.NumberFormat(undefined, {
   style: "currency",
   currency: "USD",
   maximumFractionDigits: 0,
 });
-const HERO_PERCENT = new Intl.NumberFormat(undefined, {
-  style: "percent",
-  maximumFractionDigits: 0,
-});
-const HERO_COMPACT = new Intl.NumberFormat(undefined, {
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
 
-const formatSats = (value: number) => {
-  if (value >= 100_000_000) return (value / 100_000_000).toFixed(2) + " BTC";
-  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1) + "M sats";
-  if (value >= 1_000) return (value / 1_000).toFixed(1) + "k sats";
-  return value.toLocaleString() + " sats";
-};
+
+function derivePresetConfig(preset: Preset) {
+  if (preset === "conservative") return { grid: 500, span: 10 };
+  if (preset === "fast") return { grid: 50, span: 6 };
+  return { grid: 100, span: 8 };
+}
 
 export default function App() {
   const { setLatest } = usePriceStore();
-  const [nowcast, setNowcast] = useState<PriceNow | null>(null);
-  const [histGrid, setHistGrid] = useState<number>(100);
-  const [histSpan, setHistSpan] = useState<number>(8);
+  const [preset, setPreset] = useState<Preset>("balanced");
+  const presetDefaults = derivePresetConfig(preset);
+
+  const [blockLookback, setBlockLookback] = useState<number>(144);
+  const [histGrid, setHistGrid] = useState<number>(presetDefaults.grid);
+  const [histSpan, setHistSpan] = useState<number>(presetDefaults.span);
   const [histMode, setHistMode] = useState<"count" | "weight_sum">("count");
   const [bucketSeconds, setBucketSeconds] = useState<number>(60);
   const [columnCount, setColumnCount] = useState<number>(36);
-  const [blockLookback, setBlockLookback] = useState<number>(144);
+  const [distSource, setDistSource] = useState<"mempool" | "blocks">("mempool");
+  const [distBinCount, setDistBinCount] = useState<number>(60);
+  const [distBinSize, setDistBinSize] = useState<number>(100_000);
+  const distWeighted = false;
+  const [distScale, setDistScale] = useState<"linear" | "sqrt" | "log">("linear");
   const [refreshToken, setRefreshToken] = useState<number>(0);
 
-  const defaultDistBinSize = DIST_BIN_SIZE_OPTIONS.includes(100_000)
-    ? 100_000
-    : DIST_BIN_SIZE_OPTIONS[Math.floor(DIST_BIN_SIZE_OPTIONS.length / 2)] ?? 100_000;
-  const [distSource, setDistSource] = useState<"mempool" | "blocks">(DIST_SOURCE_OPTIONS[0]);
-  const [distBinSize, setDistBinSize] = useState<number>(defaultDistBinSize);
-  const [distBinCount, setDistBinCount] = useState<number>(60);
-  const [distWeighted, setDistWeighted] = useState<boolean>(false);
-  const [distScale, setDistScale] = useState<"linear" | "sqrt" | "log">("linear");
-  const [showRoundLines, setShowRoundLines] = useState<boolean>(true);
+  const [nowcast, setNowcast] = useState<PriceNow | null>(null);
+  const [nodeStatus, setNodeStatus] = useState<NodeStatus | null>(null);
   const [curve, setCurve] = useState<CurveResp | null>(null);
-
+  const [histogram, setHistogram] = useState<HistogramResp | null>(null);
   const [stencil, setStencil] = useState<StencilPriceResp | null>(null);
+  const [candidates, setCandidates] = useState<CandidatesInfo | null>(null);
   const [stencilLoading, setStencilLoading] = useState<boolean>(false);
   const [stencilError, setStencilError] = useState<string | null>(null);
 
+  const livePrice = nowcast?.price != null && nowcast.price > 0 ? nowcast.price : null;
+
+  const historyRef = useRef<TimelinePoint[]>([]);
+  const [timelineHistory, setTimelineHistory] = useState<TimelinePoint[]>([]);
+
   useEffect(() => {
-    let alive = true;
+    setHistGrid(presetDefaults.grid);
+    setHistSpan(presetDefaults.span);
+  }, [presetDefaults.grid, presetDefaults.span]);
+
+  useEffect(() => {
+    let active = true;
     let inFlight = false;
 
-    const tickPrice = async () => {
+    const tick = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
-        const p = await getPriceNow();
-        if (alive) {
-          setNowcast(p);
-          // Lift into price store for banner/state
-          // Use client timestamp to reflect UI update cadence (~1 Hz)
-          const tsMs = Date.now();
-          if (p?.price) {
-            setLatest({ ts: tsMs, price: p.price, confidence: p.confidence });
-          }
+        const [priceResp, candidatesResp, statusResp] = await Promise.all([getPriceNow(), getCandidates(), getNodeStatus()]);
+        if (!active) return;
+        setNowcast(priceResp);
+        setNodeStatus(statusResp);
+        const nextLivePrice = priceResp.price != null && priceResp.price > 0 ? priceResp.price : null;
+        if (nextLivePrice !== null) {
+          setLatest({
+            ts: priceResp.t ? priceResp.t * 1000 : Date.now(),
+            price: nextLivePrice,
+            confidence: priceResp.confidence,
+          });
         }
-      } catch {
-        // ignore transient errors
+        setCandidates(candidatesResp);
+
+        const blend = nextLivePrice ?? 0;
+
+        if (nextLivePrice !== null || blend > 0) {
+          const next: TimelinePoint = {
+            t: Date.now(),
+            live: nextLivePrice ?? 0,
+            blend,
+            confidence: priceResp.confidence || 0,
+          };
+          historyRef.current = [...historyRef.current, next].slice(-240);
+          setTimelineHistory(historyRef.current);
+        }
       } finally {
         inFlight = false;
       }
     };
 
-    tickPrice();
-    const id = window.setInterval(tickPrice, 1000);
+    tick();
+    const id = window.setInterval(tick, 2000);
     return () => {
-      alive = false;
+      active = false;
       window.clearInterval(id);
     };
-  }, []);
+  }, [refreshToken, stencil]);
 
   useEffect(() => {
-    let alive = true;
-
-    const fetchStencil = async () => {
-      setStencilLoading(true);
-      try {
-        const result = await getStencilPrice({ start: -Math.abs(blockLookback) });
-        if (!alive) return;
-        setStencil(result);
-        setStencilError(null);
-      } catch (err) {
-        if (!alive) return;
-        setStencil(null);
-        setStencilError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (alive) setStencilLoading(false);
-      }
-    };
-
-    fetchStencil();
-    return () => {
-      alive = false;
-    };
-  }, [blockLookback, refreshToken]);
-
-  useEffect(() => {
-    if (distSource === "blocks" && distWeighted) {
-      setDistWeighted(false);
-    }
-  }, [distSource, distWeighted]);
-
-  useEffect(() => {
-    let alive = true;
-
-    const fetchCurve = async () => {
+    let active = true;
+    const run = async () => {
       try {
         const response = await getRnrCurve();
-        if (!alive) return;
-        setCurve(response);
+        if (active) setCurve(response);
       } catch {
-        if (!alive) return;
-        setCurve(null);
+        if (active) setCurve(null);
       }
     };
-
-    fetchCurve();
-    const id = window.setInterval(fetchCurve, 6000);
+    run();
+    const id = window.setInterval(run, 6000);
     return () => {
-      alive = false;
+      active = false;
       window.clearInterval(id);
     };
   }, [refreshToken]);
 
-  const handleRefresh = () => setRefreshToken((token) => token + 1);
+  useEffect(() => {
+    let active = true;
+    const run = async () => {
+      try {
+        const response = await getHistogram({ grid: histGrid, span: histSpan });
+        if (active) setHistogram(response);
+      } catch {
+        if (active) setHistogram(null);
+      }
+    };
+    run();
+    const id = window.setInterval(run, 6000);
+    return () => {
+      active = false;
+      window.clearInterval(id);
+    };
+  }, [histGrid, histSpan, refreshToken]);
 
-  const heroPrice = nowcast?.price ?? null;
-  const heroConfidence = nowcast?.confidence ?? null;
-  const heroSamples = nowcast?.samples_used ?? null;
-  const heroPriceLabel = heroPrice ? HERO_CURRENCY.format(heroPrice) : "--";
-  const heroConfidenceLabel = heroConfidence !== null ? HERO_PERCENT.format(heroConfidence) : "--";
-  const heroSamplesLabel = heroSamples !== null ? HERO_COMPACT.format(heroSamples) : "--";
-  const heroLastUpdate = nowcast?.t
-    ? new Date(nowcast.t * 1000).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })
+  useEffect(() => {
+    let active = true;
+    const run = async () => {
+      setStencilLoading(true);
+      try {
+        const response = await getStencilPrice({ start: -Math.abs(blockLookback) });
+        if (!active) return;
+        setStencil(response);
+        setStencilError(null);
+      } catch (error) {
+        if (!active) return;
+        setStencil(null);
+        setStencilError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (active) setStencilLoading(false);
+      }
+    };
+    run();
+    return () => {
+      active = false;
+    };
+  }, [blockLookback, refreshToken]);
+
+  const blend = null; // Historical estimates remain separate; no arbitrary blend.
+  const lastUpdated = nowcast?.t
+    ? new Date(nowcast.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     : "waiting";
-  const fulcrumEnabled = String(import.meta.env.VITE_FULCRUM_ENABLED ?? "true").toLowerCase() !== "false";
+
+  const topStats: StatItem[] = [
+    {label: "Legacy nowcast", value: livePrice !== null ? USD.format(livePrice) : "--", tone: "estimate", detail: "Primary model retained during shadow validation"},
+    {label: "Historical stencil", value: stencil?.estimated_price ? USD.format(stencil.estimated_price) : "--", detail: stencil ? `${stencil.block_count} blocks; different observation horizon` : "Waiting for historical sweep"},
+    {label: "Rolling observations", value: nowcast ? nowcast.samples_used.toLocaleString() : "--", detail: "15-minute live output window; not independent trades"},
+  ];
+
+  const statusBanner = nodeStatus?.status === "missing" ? (
+    <div className="rounded-2xl border border-rose-400/30 bg-rose-500/12 px-4 py-3 text-sm text-rose-100">
+      <div className="font-semibold uppercase tracking-[0.18em] text-rose-300">Node missing</div>
+      <div className="mt-1">{nodeStatus.message}</div>
+    </div>
+  ) : nodeStatus?.status === "not_ready" ? (
+    <div className="rounded-2xl border border-amber-400/30 bg-amber-500/12 px-4 py-3 text-sm text-amber-100">
+      <div className="font-semibold uppercase tracking-[0.18em] text-amber-300">Node not ready</div>
+      <div className="mt-1">
+        {nodeStatus.message}
+        {nodeStatus.blocks != null || nodeStatus.headers != null ? ` ${nodeStatus.blocks ?? 0}/${nodeStatus.headers ?? 0} blocks loaded.` : ""}
+      </div>
+    </div>
+  ) : null;
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-slate-950 text-slate-100">
-      <div className="gradient-orb gradient-orb--one" />
-      <div className="gradient-orb gradient-orb--two" />
-      <div className="grid-overlay" />
-      <div className="container mx-auto max-w-screen-xl px-4 md:px-6 lg:px-8 pb-16 pt-10">
-        <header className="pb-4">
-          <div className="grid gap-10 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
-            <div className="space-y-6">
-              <span className="inline-flex items-center rounded-full border border-slate-500/30 bg-slate-500/10 px-4 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200/80">
-                On-chain resonance nowcasting
-              </span>
-              <h1 className="text-4xl font-semibold tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
-                Live Bitcoin price inference from mempool and recent blocks
-              </h1>
-              <p className="max-w-2xl text-base leading-relaxed text-slate-200/80 sm:text-lg">
-                Blend mempool round-number resonance with a calibrated historical sweep. Adjust sampling windows, compare live and anchor prices, and inspect how USD round amounts cluster over the last {blockLookback.toLocaleString()} blocks.
-              </p>
-              <PriceBanner />
-              <div className="flex flex-wrap items-center gap-4 text-xs text-slate-200/70">
-                <div className="rounded-full border border-slate-500/30 bg-slate-800/70 px-4 py-1">
-                  Refresh cadence <span className="font-semibold text-slate-100">4s</span>
-                </div>
-                <div className="rounded-full border border-slate-500/30 bg-slate-800/70 px-4 py-1">
-                  Fulcrum sweep <span className="font-semibold text-slate-100">{fulcrumEnabled ? "enabled" : "disabled"}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRefresh}
-                  className="rounded-full border border-sky-400/60 bg-sky-500/20 px-5 py-1.5 text-xs font-semibold uppercase tracking-wide text-sky-100 transition hover:border-sky-300 hover:bg-sky-500/30"
-                >
-                  Manual refresh
-                </button>
-              </div>
-            </div>
-            <div className="flex h-full items-end justify-end">
-              <div className="w-full max-w-sm rounded-[20px] border border-slate-700/30 bg-slate-900/80 p-6 shadow-[0_20px_50px_rgba(2,6,23,0.45)]">
-                <div className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-400">Nowcaster snapshot</div>
-                <div className="mt-5 space-y-4 text-sm text-slate-300/90">
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-slate-300">Current price</span>
-                    <span className="text-lg font-semibold text-sky-200">{heroPriceLabel}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-slate-300">Confidence</span>
-                    <span className="font-medium text-emerald-300">{heroConfidenceLabel}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-slate-300">Mempool samples</span>
-                    <span className="font-medium text-amber-300">{heroSamplesLabel}</span>
-                  </div>
-                  <div className="rounded-2xl border border-slate-600/40 bg-slate-800/80 px-4 py-2 text-xs text-slate-300/90">
-                    Last refresh: {heroLastUpdate}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.12),transparent_34%),radial-gradient(circle_at_top_right,rgba(217,70,239,0.1),transparent_30%),linear-gradient(180deg,#06111f_0%,#030815_45%,#02060f_100%)] text-slate-100">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-6 px-4 py-5 md:px-6 lg:px-8">
+        <EvaluationPanel />
+        <TopStatBar items={topStats} live={!!nowcast?.t && Date.now()/1000 - nowcast.t < 30} updatedAt={lastUpdated} heroContent={<PriceBanner />} statusBanner={statusBanner} />
 
-        <main className="mt-12 grid gap-8 xl:grid-cols-[minmax(0,2.2fr)_minmax(320px,1fr)]">
-          <div className="space-y-8">
-            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-              <PriceCards
-                nowcast={nowcast}
-                stencil={stencil}
-                blockLookback={blockLookback}
-                stencilLoading={stencilLoading}
-              />
-            </section>
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,0.88fr)]">
+          <div className="space-y-6">
+            <PrimaryResonanceChart
+              curve={curve}
+              histogram={histogram}
+              livePrice={nowcast?.price ?? null}
+              modelPrice={null}
+              blendedPrice={blend}
+              confidence={nowcast?.confidence ?? null}
+              updatedLabel={lastUpdated}
+            />
 
-            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-              <CurveChart curve={curve} />
-            </section>
-
-            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-8 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-              <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold text-slate-50">Historical round-number heatmap</h2>
-                  <p className="text-sm text-slate-300/80">
-                    Clusters of USD anchors derived from the latest {blockLookback.toLocaleString()} blocks.
-                  </p>
-                </div>
-                <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
-                  {(stencil?.round_stats.length ?? 0).toLocaleString()} anchors | {stencil?.samples_used?.toLocaleString() ?? "--"} outputs
-                </div>
-              </header>
-              <RoundUsdHeatmap
-                stats={stencil?.round_stats ?? []}
-                estimatedPrice={stencil?.estimated_price ?? null}
-                samplesUsed={stencil?.samples_used ?? null}
-                blockCount={stencil?.block_count ?? blockLookback}
-                loading={stencilLoading}
-                error={stencilError}
-              />
-            </section>
-
-            <div className="grid gap-10 lg:grid-cols-2">
-              <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-                <header className="mb-6 flex items-center justify-between">
-                  <h2 className="text-xl font-semibold text-slate-50">Round number output</h2>
-                  <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
-                    grid {histGrid.toLocaleString()} | span x{histSpan} | mode {histMode === "count" ? "count" : "weight"}
-                  </div>
-                </header>
-                <RoundNumberHistogram
-                  apiBase={API_BASE}
-                  grid={histGrid}
-                  span={histSpan}
-                  mode={histMode}
-                  refreshToken={refreshToken}
-                />
-              </section>
-
-              <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-                <header className="mb-6 flex items-center justify-between">
-                  <h2 className="text-xl font-semibold text-slate-50">Live mempool heatmap</h2>
-                  <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
-                    bucket {bucketSeconds}s | columns {columnCount}
-                  </div>
-                </header>
-                <TransactionsHeatmap
-                  bucketSeconds={bucketSeconds}
-                  columnCount={columnCount}
-                  refreshToken={refreshToken}
-                />
-              </section>
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+              <EstimateTimeline data={timelineHistory} />
+              <ConcentrationPanel histogram={histogram} mode={histMode} />
             </div>
 
-            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-6 shadow-[0_20px_70px_rgba(4,6,25,0.35)] lg:col-span-2">
-              <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold text-slate-50">Transaction size distribution</h2>
-                  <p className="text-sm text-slate-300/80">Analyse how output amounts cluster in {distSource === "mempool" ? "the live mempool" : `the last ${blockLookback.toLocaleString()} blocks`}.</p>
-                </div>
-                <div className="text-xs uppercase tracking-[0.3em] text-slate-400">{distBinCount.toLocaleString()} bins | width {formatSats(distBinSize)}</div>
-              </header>
-              <SatsDistributionPanel
-                source={distSource}
-                binSize={distBinSize}
-                binCount={distBinCount}
-                blockLookback={blockLookback}
-                weighted={distWeighted}
-                scale={distScale}
-                showRoundLines={showRoundLines}
-                roundUsdAnchors={HIST_GRID_OPTIONS}
-                priceUsd={nowcast?.price ?? null}
-                refreshToken={refreshToken}
-              />
-            </section>
-
+            <MethodologyDrawer
+              candidates={candidates}
+              stencil={stencil}
+              stencilLoading={stencilLoading}
+              stencilError={stencilError}
+              blockLookback={blockLookback}
+              bucketSeconds={bucketSeconds}
+              columnCount={columnCount}
+              refreshToken={refreshToken}
+              distSource={distSource}
+              distBinSize={distBinSize}
+              distBinCount={distBinCount}
+              distWeighted={distWeighted}
+              distScale={distScale}
+              priceUsd={livePrice}
+            />
           </div>
 
-          <aside className="space-y-10 xl:sticky xl:top-12">
-            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-7 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-              <ControlOverlay
-                histGrid={histGrid}
-                histSpan={histSpan}
-                histMode={histMode}
-                bucketSeconds={bucketSeconds}
-                columnCount={columnCount}
-                blockLookback={blockLookback}
-                distSource={distSource}
-                distBinSize={distBinSize}
-                distBinCount={distBinCount}
-                distWeighted={distWeighted}
-                distScale={distScale}
-                showRoundLines={showRoundLines}
-                gridOptions={HIST_GRID_OPTIONS}
-                bucketOptions={HEAT_BUCKET_OPTIONS}
-                columnOptions={HEAT_COLUMN_OPTIONS}
-                blockOptions={BLOCK_LOOKBACK_OPTIONS}
-                distSourceOptions={DIST_SOURCE_OPTIONS}
-                distBinSizeOptions={DIST_BIN_SIZE_OPTIONS}
-                distScaleOptions={DIST_SCALE_OPTIONS}
-                onHistGridChange={setHistGrid}
-                onHistSpanChange={setHistSpan}
-                onHistModeChange={setHistMode}
-                onBucketChange={setBucketSeconds}
-                onColumnChange={setColumnCount}
-                onBlockLookbackChange={(v) => setBlockLookback(Math.max(1, Math.min(144, v)))}
-                onDistSourceChange={setDistSource}
-                onDistBinSizeChange={setDistBinSize}
-                onDistBinCountChange={(value) => setDistBinCount(Math.min(200, Math.max(10, value)))}
-                onDistWeightedChange={setDistWeighted}
-                onDistScaleChange={setDistScale}
-                onShowRoundLinesChange={setShowRoundLines}
-                onRefresh={handleRefresh}
-              />
-            </section>
+          <div className="space-y-6">
+            <QuickControls
+              lookback={blockLookback}
+              grid={histGrid}
+              preset={preset}
+              onLookbackChange={setBlockLookback}
+              onGridChange={setHistGrid}
+              onPresetChange={setPreset}
+              onRefresh={() => setRefreshToken((token) => token + 1)}
+            />
 
-            <section className="rounded-[20px] border border-slate-800/60 bg-slate-900/70 p-7 shadow-[0_20px_70px_rgba(4,6,25,0.35)]">
-              <CandidatesPanel />
+            <AdvancedControlsPanel
+              histSpan={histSpan}
+              histMode={histMode}
+              bucketSeconds={bucketSeconds}
+              columnCount={columnCount}
+              distSource={distSource}
+              distBinCount={distBinCount}
+              distBinSize={distBinSize}
+              distScale={distScale}
+              onHistSpanChange={setHistSpan}
+              onHistModeChange={setHistMode}
+              onBucketChange={setBucketSeconds}
+              onColumnChange={setColumnCount}
+              onDistSourceChange={setDistSource}
+              onDistBinCountChange={setDistBinCount}
+              onDistBinSizeChange={setDistBinSize}
+              onDistScaleChange={setDistScale}
+            />
+
+            <section className="surface-panel p-5 md:p-6">
+              <div className="eyebrow">Method summary</div>
+              <h2 className="mt-2 text-xl font-semibold text-white">How to read the model in five seconds</h2>
+              <div className="mt-4 space-y-3 text-sm leading-6 text-slate-300">
+                <p><span className="font-medium text-white">Transaction concentration</span> reveals where outputs are clustering in implied USD space.</p>
+                <p><span className="font-medium text-white">Round-number anchors</span> show which psychological price levels are gathering the most support.</p>
+                <p><span className="font-medium text-white">Resonance</span> is the curve produced when those anchors reinforce one another across the candidate price grid.</p>
+                <p><span className="font-medium text-white">Confidence</span> rises when resonance sharpens and the estimate stabilizes.</p>
+              </div>
             </section>
-          </aside>
-        </main>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
-
 
 
 

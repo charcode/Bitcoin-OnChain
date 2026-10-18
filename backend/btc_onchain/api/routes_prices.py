@@ -1,59 +1,38 @@
-from __future__ import annotations
-import time
 from fastapi import APIRouter, Request, Query, HTTPException
 from ..config import SETTINGS
+from ..core.evaluation import compare
 
 router = APIRouter()
 
-def _state(request: Request):
-    return request.app.state.app_state
+def _state(request): return request.app.state.app_state
 
-@router.get("/external/price/sources")
+@router.get('/external/price/sources')
 async def ext_sources():
-    return {"sources": [s.strip() for s in SETTINGS.external_prices_sources_csv.split(",") if s.strip()]}
+    return {'sources': SETTINGS.external_prices_sources}
 
-@router.get("/external/price/now")
+@router.get('/external/price/now')
 async def ext_price_now(request: Request):
-    st = _state(request)
-    poller = getattr(st, "ext_prices", None)
-    if poller is None:
-        raise HTTPException(status_code=503, detail="External price poller disabled")
-    snap = poller.snapshot()
-    return snap
+    poller = getattr(_state(request), 'ext_prices', None)
+    if poller is None: raise HTTPException(status_code=503, detail='External comparison disabled')
+    return poller.snapshot()
 
-@router.get("/external/price/history")
+@router.get('/external/price/history')
 async def ext_price_history(request: Request, limit: int = Query(300, ge=1, le=5000)):
-    st = _state(request)
-    poller = getattr(st, "ext_prices", None)
-    if poller is None:
-        raise HTTPException(status_code=503, detail="External price poller disabled")
-    rows = await poller.history(limit=limit)
-    return {"rows": [{"ts": ts, "source": src, "price": price} for (ts, src, price) in rows]}
+    poller = getattr(_state(request), 'ext_prices', None)
+    if poller is None: raise HTTPException(status_code=503, detail='External comparison disabled')
+    return {'rows': [{'ts': t, 'source': s, 'price': p} for t,s,p in await poller.history(limit)]}
 
-@router.get("/price/compare")
+@router.get('/price/evaluation')
+async def evaluation(request: Request):
+    st = _state(request)
+    result = compare(st, getattr(st, 'ext_prices', None))
+    recorder = getattr(st, 'evaluation', None)
+    result['statistics'] = recorder.stats if recorder else {'n': 0, 'status': 'disabled'}
+    return result
+
+@router.get('/price/compare')
 async def price_compare(request: Request):
-    """
-    Compare your nowcaster (/price/now) with the external median.
-    """
     st = _state(request)
-    # your nowcaster:
-    now = st.latest_price_now()  # existing method in your code
-    now_price = float(now.get("price", 0.0))
-
-    poller = getattr(st, "ext_prices", None)
-    ext = None
-    if poller:
-        snap = poller.snapshot()
-        ext = snap.get("median", {})
-    ext_price = float(ext.get("price") or 0.0)
-
-    delta = None
-    if ext_price > 0 and now_price > 0:
-        delta = 100.0 * (now_price - ext_price) / ext_price
-
-    return {
-        "t": time.time(),
-        "nowcaster": now,
-        "external": {"price": ext_price, "ts": ext.get("ts") if ext else None},
-        "delta_pct": delta,
-    }
+    result = compare(st, getattr(st, 'ext_prices', None))
+    return {'t': result['t'], 'nowcaster': result['legacy'], 'external': result['reference'],
+            'delta_pct': result['legacy']['error_pct'], 'delta_usd': result['legacy']['error_usd']}

@@ -6,12 +6,6 @@ const USD = new Intl.NumberFormat(undefined, {
   currency: "USD",
   maximumFractionDigits: 0,
 });
-const USD_SIGNED_0 = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 0,
-  signDisplay: "always",
-});
 const USD_SIGNED_2 = new Intl.NumberFormat(undefined, {
   style: "currency",
   currency: "USD",
@@ -23,12 +17,6 @@ const PCT_SIGNED_2 = new Intl.NumberFormat(undefined, {
   style: "percent",
   maximumFractionDigits: 2,
   minimumFractionDigits: 2,
-  signDisplay: "always",
-});
-const PCT_SIGNED_4 = new Intl.NumberFormat(undefined, {
-  style: "percent",
-  maximumFractionDigits: 4,
-  minimumFractionDigits: 4,
   signDisplay: "always",
 });
 
@@ -64,7 +52,7 @@ function colorFromDelta(prev?: number, curr?: number): { h: number; s: number; l
 }
 
 export default function PriceBanner() {
-  const { latest, previous, setLatest } = usePriceStore();
+  const { latest, previous } = usePriceStore();
 
   const [flash, setFlash] = useState(false);
   // Trigger a brief flash animation when the price changes
@@ -95,36 +83,51 @@ export default function PriceBanner() {
   const prevPrice = previous?.price;
   const deltaAbs = prevPrice != null && price != null ? price - prevPrice : undefined;
   const deltaPct = prevPrice != null && price != null && prevPrice !== 0 ? (price - prevPrice) / prevPrice : undefined;
+  const direction = deltaAbs == null || deltaAbs === 0 ? "flat" : deltaAbs > 0 ? "up" : "down";
   const deltaUsdLabel = deltaAbs != null && isFinite(deltaAbs) ? USD_SIGNED_2.format(deltaAbs) : "--";
   const deltaPctLabel = deltaPct != null && isFinite(deltaPct) ? PCT_SIGNED_2.format(deltaPct) : "--";
   const deltaTextColor = deltaPct == null || deltaPct === 0 ? "hsla(0,0%,80%,0.85)" : textColor;
+  const deltaLabel =
+    deltaAbs != null && deltaPct != null
+      ? `${direction === "up" ? "Up" : direction === "down" ? "Down" : "Flat"} ${deltaUsdLabel} (${deltaPctLabel})`
+      : "--";
 
   const priceLabel = price !== null ? USD.format(price) : "--";
-  const timeLabel = "Updated " + formatTime(lastTs);
+  const timeLabel = "Legacy model · " + formatTime(lastTs);
 
   return (
-    <div className="mt-4">
+    <div className="mt-2 md:mt-3">
       <div
-        className="select-none font-extrabold leading-none tracking-tight whitespace-nowrap tabular-nums flex flex-wrap items-baseline gap-x-3 gap-y-1"
+        className="select-none font-extrabold leading-none tracking-tight tabular-nums"
         style={{
           color: textColor,
-          textShadow: `0 0 22px ${glow}`,
-          fontSize: "clamp(40px, 8vw, 88px)",
-          lineHeight: 1.05,
-          letterSpacing: "-0.02em",
-          transform: flash ? "scale(1.02)" : "scale(1.0)",
-          transition: "color 400ms ease, text-shadow 400ms ease, transform 220ms ease-out",
+          textShadow: `0 0 36px ${glow}`,
+          fontSize: "clamp(34px, 6vw, 78px)",
+          lineHeight: 0.94,
+          letterSpacing: "-0.04em",
+          transform: "none",
+          transformOrigin: "left bottom",
+          transition: "color 280ms ease, text-shadow 280ms ease, transform 180ms ease-out",
         }}
       >
-        <span>{priceLabel}</span>
-        <span
-          className="font-semibold align-baseline"
-          style={{ color: deltaTextColor, fontSize: "clamp(12px, 1.7vw, 16px)", transition: "color 400ms ease" }}
-        >
-          {deltaAbs != null && deltaPct != null ? `${deltaUsdLabel} (${deltaPctLabel})` : "--"}
-        </span>
+        <span className="block whitespace-nowrap">{priceLabel}</span>
       </div>
-      <div className="mt-2 text-slate-400" style={{ opacity: 0.8, fontSize: "clamp(12px, 1.7vw, 16px)" }}>{timeLabel}</div>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <div
+          className="rounded-full border px-4 py-2 text-sm font-semibold tabular-nums"
+          style={{
+            color: deltaTextColor,
+            borderColor: deltaPct == null || deltaPct === 0 ? "rgba(148,163,184,0.22)" : glow,
+            backgroundColor: deltaPct == null || deltaPct === 0 ? "rgba(15,23,42,0.38)" : "rgba(15,23,42,0.52)",
+            boxShadow: deltaPct == null || deltaPct === 0 ? "none" : `0 0 18px ${glow}`,
+            fontSize: "clamp(13px, 1.2vw, 18px)",
+            transition: "color 280ms ease, border-color 280ms ease, box-shadow 280ms ease",
+          }}
+        >
+          {deltaLabel}
+        </div>
+      </div>
+      <div className="mt-2 text-slate-400" style={{ opacity: 0.8, fontSize: "clamp(12px, 1.4vw, 15px)" }}>{timeLabel}</div>
 
       {/* Debug controls removed; color pipeline driven purely by live updates */}
     </div>
